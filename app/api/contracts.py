@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -18,6 +18,8 @@ from app.core.dependencies import (
     check_contract_access,
 )
 from app.core.roles import Roles
+from app.core.audit_actions import AuditActions
+from app.services.audit_service import create_audit_log
 
 
 router = APIRouter(
@@ -46,10 +48,27 @@ def normalize_text(value: str | None):
     return value if value else None
 
 
+def validate_positive_id(
+    value: int,
+    field_name: str,
+) -> None:
+
+    if value <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{field_name} نامعتبر است",
+        )
+
+
 def get_active_university(
     db: Session,
     university_id: int,
 ):
+    validate_positive_id(
+        university_id,
+        "شناسه دانشگاه",
+    )
+
     university = (
         db.query(University)
         .filter(
@@ -77,6 +96,11 @@ def get_active_transport_company(
     db: Session,
     transport_company_id: int,
 ):
+    validate_positive_id(
+        transport_company_id,
+        "شناسه شرکت حمل‌ونقل",
+    )
+
     company = (
         db.query(TransportCompany)
         .filter(
@@ -104,6 +128,11 @@ def get_contract_or_404(
     db: Session,
     contract_id: int,
 ):
+    validate_positive_id(
+        contract_id,
+        "شناسه قرارداد",
+    )
+
     contract = (
         db.query(Contract)
         .filter(
@@ -139,6 +168,131 @@ def check_contract_resource_access(
         current_user,
         contract.id,
     )
+
+
+def contract_snapshot(
+    contract: Contract | None,
+):
+    if contract is None:
+        return None
+
+    return {
+        "id": contract.id,
+        "university_id": contract.university_id,
+        "transport_company_id": contract.transport_company_id,
+        "contract_number": contract.contract_number,
+        "start_date": (
+            contract.start_date.isoformat()
+            if contract.start_date
+            else None
+        ),
+        "end_date": (
+            contract.end_date.isoformat()
+            if contract.end_date
+            else None
+        ),
+        "contract_amount": (
+            float(contract.contract_amount)
+            if contract.contract_amount is not None
+            else None
+        ),
+        "description": contract.description,
+        "is_active": contract.is_active,
+    }
+
+
+def validate_contract_dates(
+    start_date,
+    end_date,
+) -> None:
+
+    if end_date < start_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تاریخ پایان قرارداد نمی‌تواند قبل از تاریخ شروع باشد",
+        )
+
+
+def validate_active_assignments_against_contract_dates(
+    db: Session,
+    contract: Contract,
+    new_start_date,
+    new_end_date,
+) -> None:
+    """
+    بررسی می‌کند که تخصیص‌های فعال راننده و خودرو
+    همچنان داخل بازه جدید قرارداد قرار داشته باشند.
+    """
+
+    active_driver_assignments = (
+        db.query(ContractDriver)
+        .filter(
+            ContractDriver.contract_id == contract.id,
+            ContractDriver.is_active.is_(True),
+        )
+        .all()
+    )
+
+    for assignment in active_driver_assignments:
+
+        if (
+            assignment.start_date is not None
+            and assignment.start_date < new_start_date
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "تاریخ شروع جدید قرارداد با یکی از "
+                    "تخصیص‌های فعال رانندگان سازگار نیست"
+                ),
+            )
+
+        if (
+            assignment.end_date is not None
+            and assignment.end_date > new_end_date
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "تاریخ پایان جدید قرارداد با یکی از "
+                    "تخصیص‌های فعال رانندگان سازگار نیست"
+                ),
+            )
+
+    active_vehicle_assignments = (
+        db.query(ContractVehicle)
+        .filter(
+            ContractVehicle.contract_id == contract.id,
+            ContractVehicle.is_active.is_(True),
+        )
+        .all()
+    )
+
+    for assignment in active_vehicle_assignments:
+
+        if (
+            assignment.start_date is not None
+            and assignment.start_date < new_start_date
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "تاریخ شروع جدید قرارداد با یکی از "
+                    "تخصیص‌های فعال خودروها سازگار نیست"
+                ),
+            )
+
+        if (
+            assignment.end_date is not None
+            and assignment.end_date > new_end_date
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "تاریخ پایان جدید قرارداد با یکی از "
+                    "تخصیص‌های فعال خودروها سازگار نیست"
+                ),
+            )
 
 
 def check_active_assignments_before_company_change(
@@ -185,6 +339,67 @@ def check_active_assignments_before_company_change(
         )
 
 
+def check_active_assignments_before_deactivation(
+    db: Session,
+    contract: Contract,
+) -> None:
+    """
+    جلوگیری از غیرفعال‌کردن قراردادی که هنوز
+    تخصیص فعال راننده یا خودرو دارد.
+    """
+
+    active_driver_assignments = (
+        db.query(ContractDriver)
+        .filter(
+            ContractDriver.contract_id == contract.id,
+            ContractDriver.is_active.is_(True),
+        )
+        .count()
+    )
+
+    active_vehicle_assignments = (
+        db.query(ContractVehicle)
+        .filter(
+            ContractVehicle.contract_id == contract.id,
+            ContractVehicle.is_active.is_(True),
+        )
+        .count()
+    )
+
+    if (
+        active_driver_assignments > 0
+        or active_vehicle_assignments > 0
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "ابتدا باید تخصیص‌های فعال رانندگان و خودروهای "
+                "این قرارداد غیرفعال شوند"
+            ),
+        )
+
+
+def validate_contract_activation(
+    db: Session,
+    contract: Contract,
+) -> None:
+
+    get_active_university(
+        db,
+        contract.university_id,
+    )
+
+    get_active_transport_company(
+        db,
+        contract.transport_company_id,
+    )
+
+    validate_contract_dates(
+        contract.start_date,
+        contract.end_date,
+    )
+
+
 # =========================================================
 # ایجاد قرارداد
 # =========================================================
@@ -196,6 +411,7 @@ def check_active_assignments_before_company_change(
 )
 def create_contract(
     contract_data: ContractCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -215,6 +431,11 @@ def create_contract(
         contract_data.university_id,
     )
 
+    validate_positive_id(
+        contract_data.transport_company_id,
+        "شناسه شرکت حمل‌ونقل",
+    )
+
     contract_number = normalize_text(
         contract_data.contract_number
     )
@@ -229,11 +450,10 @@ def create_contract(
             detail="شماره قرارداد نمی‌تواند خالی باشد",
         )
 
-    if contract_data.end_date < contract_data.start_date:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="تاریخ پایان قرارداد نمی‌تواند قبل از تاریخ شروع باشد",
-        )
+    validate_contract_dates(
+        contract_data.start_date,
+        contract_data.end_date,
+    )
 
     existing_contract = (
         db.query(Contract)
@@ -254,6 +474,17 @@ def create_contract(
         contract_data.transport_company_id,
     )
 
+    if contract_data.is_active:
+        get_active_university(
+            db,
+            contract_data.university_id,
+        )
+
+        get_active_transport_company(
+            db,
+            contract_data.transport_company_id,
+        )
+
     contract = Contract(
         university_id=contract_data.university_id,
         transport_company_id=contract_data.transport_company_id,
@@ -265,9 +496,37 @@ def create_contract(
         is_active=contract_data.is_active,
     )
 
-    db.add(contract)
-    db.commit()
-    db.refresh(contract)
+    try:
+        db.add(contract)
+        db.flush()
+
+        create_audit_log(
+            db,
+            user=current_user,
+            action=AuditActions.UPDATE,
+            entity_type="Contract",
+            entity_id=contract.id,
+            description="ایجاد قرارداد",
+            old_values=None,
+            new_values=contract_snapshot(
+                contract,
+            ),
+            ip_address=(
+                request.client.host
+                if request.client
+                else None
+            ),
+            user_agent=request.headers.get(
+                "user-agent",
+            ),
+        )
+
+        db.commit()
+        db.refresh(contract)
+
+    except Exception:
+        db.rollback()
+        raise
 
     return contract
 
@@ -291,6 +550,18 @@ def get_contracts(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="شما مجوز مشاهده قراردادها را ندارید",
+        )
+
+    if university_id is not None:
+        validate_positive_id(
+            university_id,
+            "شناسه دانشگاه",
+        )
+
+    if transport_company_id is not None:
+        validate_positive_id(
+            transport_company_id,
+            "شناسه شرکت حمل‌ونقل",
         )
 
     query = db.query(Contract)
@@ -415,6 +686,7 @@ def get_contract(
 def update_contract(
     contract_id: int,
     contract_data: ContractCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -459,11 +731,10 @@ def update_contract(
             detail="شماره قرارداد نمی‌تواند خالی باشد",
         )
 
-    if contract_data.end_date < contract_data.start_date:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="تاریخ پایان قرارداد نمی‌تواند قبل از تاریخ شروع باشد",
-        )
+    validate_contract_dates(
+        contract_data.start_date,
+        contract_data.end_date,
+    )
 
     existing_contract = (
         db.query(Contract)
@@ -486,9 +757,41 @@ def update_contract(
         contract_data.transport_company_id,
     )
 
+    if (
+        contract.start_date != contract_data.start_date
+        or contract.end_date != contract_data.end_date
+    ):
+        validate_active_assignments_against_contract_dates(
+            db,
+            contract,
+            contract_data.start_date,
+            contract_data.end_date,
+        )
+
     get_active_transport_company(
         db,
         contract_data.transport_company_id,
+    )
+
+    if contract_data.is_active:
+        get_active_university(
+            db,
+            contract.university_id,
+        )
+
+        get_active_transport_company(
+            db,
+            contract_data.transport_company_id,
+        )
+
+    elif contract.is_active and not contract_data.is_active:
+        check_active_assignments_before_deactivation(
+            db,
+            contract,
+        )
+
+    old_values = contract_snapshot(
+        contract,
     )
 
     contract.transport_company_id = (
@@ -501,8 +804,36 @@ def update_contract(
     contract.description = description
     contract.is_active = contract_data.is_active
 
-    db.commit()
-    db.refresh(contract)
+    try:
+        db.flush()
+
+        create_audit_log(
+            db,
+            user=current_user,
+            action=AuditActions.UPDATE,
+            entity_type="Contract",
+            entity_id=contract.id,
+            description="ویرایش قرارداد",
+            old_values=old_values,
+            new_values=contract_snapshot(
+                contract,
+            ),
+            ip_address=(
+                request.client.host
+                if request.client
+                else None
+            ),
+            user_agent=request.headers.get(
+                "user-agent",
+            ),
+        )
+
+        db.commit()
+        db.refresh(contract)
+
+    except Exception:
+        db.rollback()
+        raise
 
     return contract
 
@@ -518,6 +849,7 @@ def update_contract(
 def update_contract_status(
     contract_id: int,
     is_active: bool,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -537,9 +869,62 @@ def update_contract_status(
         contract.university_id,
     )
 
+    if is_active:
+
+        validate_contract_activation(
+            db,
+            contract,
+        )
+
+        action = AuditActions.ACTIVATE
+        description = "فعال‌سازی قرارداد"
+
+    else:
+
+        if contract.is_active:
+            check_active_assignments_before_deactivation(
+                db,
+                contract,
+            )
+
+        action = AuditActions.DEACTIVATE
+        description = "غیرفعال‌سازی قرارداد"
+
+    old_values = contract_snapshot(
+        contract,
+    )
+
     contract.is_active = is_active
 
-    db.commit()
-    db.refresh(contract)
+    try:
+        db.flush()
+
+        create_audit_log(
+            db,
+            user=current_user,
+            action=action,
+            entity_type="Contract",
+            entity_id=contract.id,
+            description=description,
+            old_values=old_values,
+            new_values=contract_snapshot(
+                contract,
+            ),
+            ip_address=(
+                request.client.host
+                if request.client
+                else None
+            ),
+            user_agent=request.headers.get(
+                "user-agent",
+            ),
+        )
+
+        db.commit()
+        db.refresh(contract)
+
+    except Exception:
+        db.rollback()
+        raise
 
     return contract
