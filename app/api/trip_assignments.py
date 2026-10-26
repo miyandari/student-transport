@@ -48,14 +48,32 @@ MANAGEMENT_AND_COMPANY_ROLES = MANAGEMENT_ROLES | {
 }
 
 
+def validate_positive_id(
+    value: int,
+    field_name: str,
+) -> None:
+
+    if value <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{field_name} نامعتبر است",
+        )
+
+
 def get_trip_or_404(
     db: Session,
     trip_id: int,
-):
+) -> Trip:
+
+    validate_positive_id(
+        trip_id,
+        "شناسه سفر",
+    )
+
     trip = (
         db.query(Trip)
         .filter(
-            Trip.id == trip_id
+            Trip.id == trip_id,
         )
         .first()
     )
@@ -72,11 +90,17 @@ def get_trip_or_404(
 def get_assignment_or_404(
     db: Session,
     assignment_id: int,
-):
+) -> TripAssignment:
+
+    validate_positive_id(
+        assignment_id,
+        "شناسه تخصیص",
+    )
+
     assignment = (
         db.query(TripAssignment)
         .filter(
-            TripAssignment.id == assignment_id
+            TripAssignment.id == assignment_id,
         )
         .first()
     )
@@ -93,11 +117,12 @@ def get_assignment_or_404(
 def get_trip_contract(
     db: Session,
     trip: Trip,
-):
+) -> Contract:
+
     service = (
         db.query(Service)
         .filter(
-            Service.id == trip.service_id
+            Service.id == trip.service_id,
         )
         .first()
     )
@@ -117,7 +142,7 @@ def get_trip_contract(
     contract = (
         db.query(Contract)
         .filter(
-            Contract.id == service.contract_id
+            Contract.id == service.contract_id,
         )
         .first()
     )
@@ -134,7 +159,57 @@ def get_trip_contract(
             detail="قرارداد مرتبط با سفر غیرفعال است",
         )
 
+    if trip.trip_date < contract.start_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تاریخ سفر قبل از شروع قرارداد است",
+        )
+
+    if trip.trip_date > contract.end_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تاریخ سفر بعد از پایان قرارداد است",
+        )
+
+    if contract.university_id != trip.university_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="قرارداد مرتبط با سرویس متعلق به دانشگاه این سفر نیست",
+        )
+
     return contract
+
+
+def validate_contract_assignment_date(
+    trip: Trip,
+    start_date,
+    end_date,
+    resource_name: str,
+) -> None:
+
+    if (
+        start_date is not None
+        and trip.trip_date < start_date
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"{resource_name} در تاریخ سفر هنوز "
+                "اعتبار نداشته است"
+            ),
+        )
+
+    if (
+        end_date is not None
+        and trip.trip_date > end_date
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"اعتبار {resource_name} در تاریخ سفر "
+                "به پایان رسیده است"
+            ),
+        )
 
 
 def validate_driver_for_trip(
@@ -142,14 +217,20 @@ def validate_driver_for_trip(
     trip: Trip,
     contract: Contract,
     driver_id: int | None,
-):
+) -> None:
+
     if driver_id is None:
         return
+
+    validate_positive_id(
+        driver_id,
+        "شناسه راننده",
+    )
 
     driver = (
         db.query(Driver)
         .filter(
-            Driver.id == driver_id
+            Driver.id == driver_id,
         )
         .first()
     )
@@ -194,20 +275,33 @@ def validate_driver_for_trip(
             detail="راننده به قرارداد این سفر تخصیص داده نشده است",
         )
 
+    validate_contract_assignment_date(
+        trip,
+        assignment.start_date,
+        assignment.end_date,
+        "تخصیص راننده به قرارداد",
+    )
+
 
 def validate_vehicle_for_trip(
     db: Session,
     trip: Trip,
     contract: Contract,
     vehicle_id: int | None,
-):
+) -> None:
+
     if vehicle_id is None:
         return
+
+    validate_positive_id(
+        vehicle_id,
+        "شناسه خودرو",
+    )
 
     vehicle = (
         db.query(Vehicle)
         .filter(
-            Vehicle.id == vehicle_id
+            Vehicle.id == vehicle_id,
         )
         .first()
     )
@@ -252,10 +346,18 @@ def validate_vehicle_for_trip(
             detail="خودرو به قرارداد این سفر تخصیص داده نشده است",
         )
 
+    validate_contract_assignment_date(
+        trip,
+        assignment.start_date,
+        assignment.end_date,
+        "تخصیص خودرو به قرارداد",
+    )
+
 
 def validate_assignment_type(
     assignment_type: str,
-):
+) -> None:
+
     if assignment_type not in {
         "primary",
         "substitute",
@@ -269,7 +371,8 @@ def validate_assignment_type(
 def validate_assignment_dates(
     start_at: datetime | None,
     end_at: datetime | None,
-):
+) -> None:
+
     if (
         start_at is not None
         and end_at is not None
@@ -286,9 +389,15 @@ def validate_replacement_assignment(
     trip: Trip,
     replaces_assignment_id: int | None,
     assignment_type: str,
-):
+) -> None:
+
     if replaces_assignment_id is None:
         return
+
+    validate_positive_id(
+        replaces_assignment_id,
+        "شناسه تخصیص قبلی",
+    )
 
     if assignment_type != "substitute":
         raise HTTPException(
@@ -299,7 +408,7 @@ def validate_replacement_assignment(
     previous_assignment = (
         db.query(TripAssignment)
         .filter(
-            TripAssignment.id == replaces_assignment_id
+            TripAssignment.id == replaces_assignment_id,
         )
         .first()
     )
@@ -328,7 +437,8 @@ def resolve_replacement_assignment(
     trip: Trip,
     assignment_type: str,
     requested_replaces_assignment_id: int | None,
-):
+) -> int | None:
+
     if assignment_type != "substitute":
 
         if requested_replaces_assignment_id is not None:
@@ -346,7 +456,7 @@ def resolve_replacement_assignment(
             TripAssignment.is_active.is_(True),
         )
         .order_by(
-            TripAssignment.id.desc()
+            TripAssignment.id.desc(),
         )
         .first()
     )
@@ -358,6 +468,11 @@ def resolve_replacement_assignment(
         )
 
     if requested_replaces_assignment_id is not None:
+
+        validate_positive_id(
+            requested_replaces_assignment_id,
+            "شناسه تخصیص قبلی",
+        )
 
         if (
             requested_replaces_assignment_id
@@ -372,8 +487,12 @@ def resolve_replacement_assignment(
 
 
 def assignment_snapshot(
-    assignment: TripAssignment,
+    assignment: TripAssignment | None,
 ):
+
+    if assignment is None:
+        return None
+
     return {
         "id": assignment.id,
         "trip_id": assignment.trip_id,
@@ -407,6 +526,7 @@ def create_trip_assignment(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+
     if current_user.role not in MANAGEMENT_AND_COMPANY_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -532,24 +652,28 @@ def create_trip_assignment(
             if data.assignment_type == "substitute"
             else "ایجاد تخصیص اصلی برای سفر"
         ),
-        old_values=(
-            assignment_snapshot(old_assignment)
-            if old_assignment is not None
-            else None
+        old_values=assignment_snapshot(
+            old_assignment,
         ),
-        new_values=assignment_snapshot(assignment),
+        new_values=assignment_snapshot(
+            assignment,
+        ),
         ip_address=(
             request.client.host
             if request.client
             else None
         ),
         user_agent=request.headers.get(
-            "user-agent"
+            "user-agent",
         ),
     )
 
-    db.commit()
-    db.refresh(assignment)
+    try:
+        db.commit()
+        db.refresh(assignment)
+    except Exception:
+        db.rollback()
+        raise
 
     return assignment
 
@@ -566,10 +690,23 @@ def get_trip_assignments(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+
     if current_user.role not in MANAGEMENT_AND_COMPANY_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="شما مجوز مشاهده تخصیص‌ها را ندارید",
+        )
+
+    if driver_id is not None:
+        validate_positive_id(
+            driver_id,
+            "شناسه راننده",
+        )
+
+    if vehicle_id is not None:
+        validate_positive_id(
+            vehicle_id,
+            "شناسه خودرو",
         )
 
     query = db.query(TripAssignment)
@@ -588,7 +725,7 @@ def get_trip_assignments(
         )
 
         query = query.filter(
-            TripAssignment.trip_id == trip_id
+            TripAssignment.trip_id == trip_id,
         )
 
     elif current_user.role == Roles.COMPANY_ADMIN:
@@ -614,29 +751,29 @@ def get_trip_assignments(
             )
             .filter(
                 Trip.university_id
-                == current_user.university_id
+                == current_user.university_id,
             )
         )
 
     if driver_id is not None:
         query = query.filter(
-            TripAssignment.driver_id == driver_id
+            TripAssignment.driver_id == driver_id,
         )
 
     if vehicle_id is not None:
         query = query.filter(
-            TripAssignment.vehicle_id == vehicle_id
+            TripAssignment.vehicle_id == vehicle_id,
         )
 
     if is_active is not None:
         query = query.filter(
-            TripAssignment.is_active == is_active
+            TripAssignment.is_active == is_active,
         )
 
     return (
         query
         .order_by(
-            TripAssignment.id.desc()
+            TripAssignment.id.desc(),
         )
         .all()
     )
@@ -651,6 +788,7 @@ def get_trip_assignment(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+
     if current_user.role not in MANAGEMENT_AND_COMPANY_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -687,6 +825,7 @@ def update_trip_assignment(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+
     if current_user.role not in MANAGEMENT_AND_COMPANY_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -710,7 +849,7 @@ def update_trip_assignment(
     )
 
     old_values = assignment_snapshot(
-        assignment
+        assignment,
     )
 
     if data.trip_id != assignment.trip_id:
@@ -776,26 +915,30 @@ def update_trip_assignment(
                 TripAssignment.id != assignment.id,
             )
             .order_by(
-                TripAssignment.id.desc()
+                TripAssignment.id.desc(),
             )
             .first()
         )
 
-        if current_assignment is not None:
-
-            if (
-                data.replaces_assignment_id is not None
-                and data.replaces_assignment_id
-                != current_assignment.id
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="تخصیص جایگزین باید جایگزین تخصیص فعال فعلی باشد",
-                )
-
-            assignment.replaces_assignment_id = (
-                current_assignment.id
+        if current_assignment is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="برای تخصیص جایگزین باید یک تخصیص فعال وجود داشته باشد",
             )
+
+        if (
+            data.replaces_assignment_id is not None
+            and data.replaces_assignment_id
+            != current_assignment.id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="تخصیص جایگزین باید جایگزین تخصیص فعال فعلی باشد",
+            )
+
+        assignment.replaces_assignment_id = (
+            current_assignment.id
+        )
 
     if current_user.role == Roles.COMPANY_ADMIN:
         assignment.assigned_by_user_id = current_user.id
@@ -833,7 +976,7 @@ def update_trip_assignment(
         description="ویرایش تخصیص سفر",
         old_values=old_values,
         new_values=assignment_snapshot(
-            assignment
+            assignment,
         ),
         ip_address=(
             request.client.host
@@ -841,12 +984,16 @@ def update_trip_assignment(
             else None
         ),
         user_agent=request.headers.get(
-            "user-agent"
+            "user-agent",
         ),
     )
 
-    db.commit()
-    db.refresh(assignment)
+    try:
+        db.commit()
+        db.refresh(assignment)
+    except Exception:
+        db.rollback()
+        raise
 
     return assignment
 
@@ -862,6 +1009,7 @@ def update_trip_assignment_status(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+
     if current_user.role not in MANAGEMENT_AND_COMPANY_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -885,10 +1033,30 @@ def update_trip_assignment_status(
     )
 
     old_values = assignment_snapshot(
-        assignment
+        assignment,
     )
 
     if is_active:
+
+        contract = get_trip_contract(
+            db,
+            trip,
+        )
+
+        validate_driver_for_trip(
+            db,
+            trip,
+            contract,
+            assignment.driver_id,
+        )
+
+        validate_vehicle_for_trip(
+            db,
+            trip,
+            contract,
+            assignment.vehicle_id,
+        )
+
         activate_assignment(
             db,
             assignment,
@@ -898,6 +1066,7 @@ def update_trip_assignment_status(
         description = "فعال‌سازی تخصیص سفر"
 
     else:
+
         deactivate_assignment(
             db,
             assignment,
@@ -915,7 +1084,7 @@ def update_trip_assignment_status(
         description=description,
         old_values=old_values,
         new_values=assignment_snapshot(
-            assignment
+            assignment,
         ),
         ip_address=(
             request.client.host
@@ -923,11 +1092,15 @@ def update_trip_assignment_status(
             else None
         ),
         user_agent=request.headers.get(
-            "user-agent"
+            "user-agent",
         ),
     )
 
-    db.commit()
-    db.refresh(assignment)
+    try:
+        db.commit()
+        db.refresh(assignment)
+    except Exception:
+        db.rollback()
+        raise
 
     return assignment
