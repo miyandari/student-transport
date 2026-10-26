@@ -1,7 +1,6 @@
-
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -18,6 +17,8 @@ from app.core.dependencies import (
     check_contract_access,
 )
 from app.core.roles import Roles
+from app.core.audit_actions import AuditActions
+from app.services.audit_service import create_audit_log
 
 
 router = APIRouter(
@@ -36,14 +37,32 @@ MANAGEMENT_ROLES = {
 VIEW_ROLES = MANAGEMENT_ROLES
 
 
+def validate_positive_id(
+    value: int,
+    field_name: str,
+) -> None:
+
+    if value <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{field_name} نامعتبر است",
+        )
+
+
 def get_contract_or_404(
     db: Session,
     contract_id: int,
-):
+) -> Contract:
+
+    validate_positive_id(
+        contract_id,
+        "شناسه قرارداد",
+    )
+
     contract = (
         db.query(Contract)
         .filter(
-            Contract.id == contract_id
+            Contract.id == contract_id,
         )
         .first()
     )
@@ -60,11 +79,17 @@ def get_contract_or_404(
 def get_driver_or_404(
     db: Session,
     driver_id: int,
-):
+) -> Driver:
+
+    validate_positive_id(
+        driver_id,
+        "شناسه راننده",
+    )
+
     driver = (
         db.query(Driver)
         .filter(
-            Driver.id == driver_id
+            Driver.id == driver_id,
         )
         .first()
     )
@@ -78,10 +103,38 @@ def get_driver_or_404(
     return driver
 
 
+def get_assignment_or_404(
+    db: Session,
+    assignment_id: int,
+) -> ContractDriver:
+
+    validate_positive_id(
+        assignment_id,
+        "شناسه تخصیص",
+    )
+
+    assignment = (
+        db.query(ContractDriver)
+        .filter(
+            ContractDriver.id == assignment_id,
+        )
+        .first()
+    )
+
+    if assignment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="تخصیص راننده پیدا نشد",
+        )
+
+    return assignment
+
+
 def validate_dates(
     start_date: date | None,
     end_date: date | None,
-):
+) -> None:
+
     if (
         start_date is not None
         and end_date is not None
@@ -93,11 +146,42 @@ def validate_dates(
         )
 
 
+def validate_assignment_dates_against_contract(
+    contract: Contract,
+    start_date: date | None,
+    end_date: date | None,
+) -> None:
+
+    validate_dates(
+        start_date,
+        end_date,
+    )
+
+    if (
+        start_date is not None
+        and start_date < contract.start_date
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تاریخ شروع تخصیص نمی‌تواند قبل از شروع قرارداد باشد",
+        )
+
+    if (
+        end_date is not None
+        and end_date > contract.end_date
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تاریخ پایان تخصیص نمی‌تواند بعد از پایان قرارداد باشد",
+        )
+
+
 def check_management_contract_access(
     db: Session,
     current_user: User,
     contract: Contract,
-):
+) -> None:
+
     if current_user.role == Roles.COMPANY_ADMIN:
 
         if current_user.transport_company_id is None:
@@ -132,7 +216,8 @@ def check_management_contract_access(
 def validate_driver_for_contract(
     contract: Contract,
     driver: Driver,
-):
+) -> None:
+
     if driver.university_id != contract.university_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -152,6 +237,55 @@ def validate_driver_for_contract(
         )
 
 
+def assignment_snapshot(
+    assignment: ContractDriver | None,
+):
+    if assignment is None:
+        return None
+
+    return {
+        "id": assignment.id,
+        "contract_id": assignment.contract_id,
+        "driver_id": assignment.driver_id,
+        "start_date": (
+            assignment.start_date.isoformat()
+            if assignment.start_date
+            else None
+        ),
+        "end_date": (
+            assignment.end_date.isoformat()
+            if assignment.end_date
+            else None
+        ),
+        "is_active": assignment.is_active,
+    }
+
+
+def validate_active_assignment(
+    contract: Contract,
+    driver: Driver,
+    start_date: date | None,
+    end_date: date | None,
+) -> None:
+
+    if not contract.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="قرارداد غیرفعال است",
+        )
+
+    validate_driver_for_contract(
+        contract,
+        driver,
+    )
+
+    validate_assignment_dates_against_contract(
+        contract,
+        start_date,
+        end_date,
+    )
+
+
 # =========================================================
 # ایجاد تخصیص راننده به قرارداد
 # =========================================================
@@ -163,6 +297,7 @@ def validate_driver_for_contract(
 )
 def create_contract_driver(
     data: ContractDriverCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -183,12 +318,6 @@ def create_contract_driver(
         contract,
     )
 
-    if not contract.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="قرارداد غیرفعال است",
-        )
-
     driver = get_driver_or_404(
         db,
         data.driver_id,
@@ -199,10 +328,17 @@ def create_contract_driver(
         driver,
     )
 
-    validate_dates(
+    validate_assignment_dates_against_contract(
+        contract,
         data.start_date,
         data.end_date,
     )
+
+    if data.is_active and not contract.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="برای قرارداد غیرفعال نمی‌توان تخصیص فعال ایجاد کرد",
+        )
 
     existing = (
         db.query(ContractDriver)
@@ -227,9 +363,37 @@ def create_contract_driver(
         is_active=data.is_active,
     )
 
-    db.add(assignment)
-    db.commit()
-    db.refresh(assignment)
+    try:
+        db.add(assignment)
+        db.flush()
+
+        create_audit_log(
+            db,
+            user=current_user,
+            action=AuditActions.ASSIGN,
+            entity_type="ContractDriver",
+            entity_id=assignment.id,
+            description="تخصیص راننده به قرارداد",
+            old_values=None,
+            new_values=assignment_snapshot(
+                assignment,
+            ),
+            ip_address=(
+                request.client.host
+                if request.client
+                else None
+            ),
+            user_agent=request.headers.get(
+                "user-agent",
+            ),
+        )
+
+        db.commit()
+        db.refresh(assignment)
+
+    except Exception:
+        db.rollback()
+        raise
 
     return assignment
 
@@ -255,6 +419,12 @@ def get_contract_drivers(
             detail="شما مجوز مشاهده تخصیص رانندگان را ندارید",
         )
 
+    if driver_id is not None:
+        validate_positive_id(
+            driver_id,
+            "شناسه راننده",
+        )
+
     query = db.query(ContractDriver)
 
     if contract_id is not None:
@@ -271,7 +441,7 @@ def get_contract_drivers(
         )
 
         query = query.filter(
-            ContractDriver.contract_id == contract_id
+            ContractDriver.contract_id == contract_id,
         )
 
     elif current_user.role == Roles.COMPANY_ADMIN:
@@ -297,24 +467,24 @@ def get_contract_drivers(
             )
             .filter(
                 Contract.university_id
-                == current_user.university_id
+                == current_user.university_id,
             )
         )
 
     if driver_id is not None:
         query = query.filter(
-            ContractDriver.driver_id == driver_id
+            ContractDriver.driver_id == driver_id,
         )
 
     if is_active is not None:
         query = query.filter(
-            ContractDriver.is_active == is_active
+            ContractDriver.is_active == is_active,
         )
 
     return (
         query
         .order_by(
-            ContractDriver.id.desc()
+            ContractDriver.id.desc(),
         )
         .all()
     )
@@ -339,19 +509,10 @@ def get_contract_driver(
             detail="شما مجوز مشاهده این تخصیص را ندارید",
         )
 
-    assignment = (
-        db.query(ContractDriver)
-        .filter(
-            ContractDriver.id == assignment_id
-        )
-        .first()
+    assignment = get_assignment_or_404(
+        db,
+        assignment_id,
     )
-
-    if assignment is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="تخصیص راننده پیدا نشد",
-        )
 
     contract = get_contract_or_404(
         db,
@@ -378,6 +539,7 @@ def get_contract_driver(
 def update_contract_driver(
     assignment_id: int,
     data: ContractDriverCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -387,19 +549,10 @@ def update_contract_driver(
             detail="شما مجوز ویرایش تخصیص راننده را ندارید",
         )
 
-    assignment = (
-        db.query(ContractDriver)
-        .filter(
-            ContractDriver.id == assignment_id
-        )
-        .first()
+    assignment = get_assignment_or_404(
+        db,
+        assignment_id,
     )
-
-    if assignment is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="تخصیص راننده پیدا نشد",
-        )
 
     contract = get_contract_or_404(
         db,
@@ -418,12 +571,6 @@ def update_contract_driver(
             detail="تغییر قرارداد تخصیص از این بخش امکان‌پذیر نیست",
         )
 
-    if not contract.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="قرارداد غیرفعال است",
-        )
-
     driver = get_driver_or_404(
         db,
         data.driver_id,
@@ -434,10 +581,17 @@ def update_contract_driver(
         driver,
     )
 
-    validate_dates(
+    validate_assignment_dates_against_contract(
+        contract,
         data.start_date,
         data.end_date,
     )
+
+    if data.is_active and not contract.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="برای قرارداد غیرفعال نمی‌توان تخصیص فعال داشت",
+        )
 
     duplicate = (
         db.query(ContractDriver)
@@ -455,13 +609,45 @@ def update_contract_driver(
             detail="این راننده قبلاً به این قرارداد تخصیص داده شده است",
         )
 
+    old_values = assignment_snapshot(
+        assignment,
+    )
+
     assignment.driver_id = data.driver_id
     assignment.start_date = data.start_date
     assignment.end_date = data.end_date
     assignment.is_active = data.is_active
 
-    db.commit()
-    db.refresh(assignment)
+    try:
+        db.flush()
+
+        create_audit_log(
+            db,
+            user=current_user,
+            action=AuditActions.UPDATE,
+            entity_type="ContractDriver",
+            entity_id=assignment.id,
+            description="ویرایش تخصیص راننده به قرارداد",
+            old_values=old_values,
+            new_values=assignment_snapshot(
+                assignment,
+            ),
+            ip_address=(
+                request.client.host
+                if request.client
+                else None
+            ),
+            user_agent=request.headers.get(
+                "user-agent",
+            ),
+        )
+
+        db.commit()
+        db.refresh(assignment)
+
+    except Exception:
+        db.rollback()
+        raise
 
     return assignment
 
@@ -477,6 +663,7 @@ def update_contract_driver(
 def update_contract_driver_status(
     assignment_id: int,
     is_active: bool,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -486,19 +673,10 @@ def update_contract_driver_status(
             detail="شما مجوز تغییر وضعیت تخصیص را ندارید",
         )
 
-    assignment = (
-        db.query(ContractDriver)
-        .filter(
-            ContractDriver.id == assignment_id
-        )
-        .first()
+    assignment = get_assignment_or_404(
+        db,
+        assignment_id,
     )
-
-    if assignment is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="تخصیص راننده پیدا نشد",
-        )
 
     contract = get_contract_or_404(
         db,
@@ -511,9 +689,63 @@ def update_contract_driver_status(
         contract,
     )
 
+    old_values = assignment_snapshot(
+        assignment,
+    )
+
+    if is_active:
+
+        driver = get_driver_or_404(
+            db,
+            assignment.driver_id,
+        )
+
+        validate_active_assignment(
+            contract,
+            driver,
+            assignment.start_date,
+            assignment.end_date,
+        )
+
+        action = AuditActions.ACTIVATE
+        description = "فعال‌سازی تخصیص راننده به قرارداد"
+
+    else:
+
+        action = AuditActions.DEACTIVATE
+        description = "غیرفعال‌سازی تخصیص راننده از قرارداد"
+
     assignment.is_active = is_active
 
-    db.commit()
-    db.refresh(assignment)
+    try:
+        db.flush()
+
+        create_audit_log(
+            db,
+            user=current_user,
+            action=action,
+            entity_type="ContractDriver",
+            entity_id=assignment.id,
+            description=description,
+            old_values=old_values,
+            new_values=assignment_snapshot(
+                assignment,
+            ),
+            ip_address=(
+                request.client.host
+                if request.client
+                else None
+            ),
+            user_agent=request.headers.get(
+                "user-agent",
+            ),
+        )
+
+        db.commit()
+        db.refresh(assignment)
+
+    except Exception:
+        db.rollback()
+        raise
 
     return assignment
