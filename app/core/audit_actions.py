@@ -1,0 +1,21 @@
+class AuditActions:
+    CREATE = "CREATE"
+    UPDATE = "UPDATE"
+    DELETE = "DELETE"
+
+    ACTIVATE = "ACTIVATE"
+    DEACTIVATE = "DEACTIVATE"
+
+    ASSIGN = "ASSIGN"
+    REPLACE = "REPLACE"
+
+    LOGIN = "LOGIN"
+    LOGOUT = "LOGOUT"
+
+    APPROVE = "APPROVE"
+    REJECT = "REJECT"
+
+    CANCEL = "CANCEL"
+    COMPLETE = "COMPLETE"
+
+    VIEW = "VIEW"

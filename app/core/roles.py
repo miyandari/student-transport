@@ -1,0 +1,75 @@
+class Roles:
+    SUPER_ADMIN = "super_admin"
+    UNIVERSITY_ADMIN = "university_admin"
+    TRANSPORT_MANAGER = "transport_manager"
+    COMPANY_ADMIN = "company_admin"
+    DRIVER = "driver"
+    STUDENT = "student"
+
+
+ALL_ROLES = {
+    Roles.SUPER_ADMIN,
+    Roles.UNIVERSITY_ADMIN,
+    Roles.TRANSPORT_MANAGER,
+    Roles.COMPANY_ADMIN,
+    Roles.DRIVER,
+    Roles.STUDENT,
+}
+
+
+MANAGEMENT_ROLES = {
+    Roles.SUPER_ADMIN,
+    Roles.UNIVERSITY_ADMIN,
+    Roles.TRANSPORT_MANAGER,
+}
+
+
+TRANSPORT_VIEW_ROLES = {
+    Roles.SUPER_ADMIN,
+    Roles.UNIVERSITY_ADMIN,
+    Roles.TRANSPORT_MANAGER,
+    Roles.COMPANY_ADMIN,
+    Roles.DRIVER,
+    Roles.STUDENT,
+}
+
+
+TRANSPORT_MANAGEMENT_ROLES = {
+    Roles.SUPER_ADMIN,
+    Roles.UNIVERSITY_ADMIN,
+    Roles.TRANSPORT_MANAGER,
+    Roles.COMPANY_ADMIN,
+}
+
+
+TRIP_VIEW_ROLES = {
+    Roles.SUPER_ADMIN,
+    Roles.UNIVERSITY_ADMIN,
+    Roles.TRANSPORT_MANAGER,
+    Roles.COMPANY_ADMIN,
+    Roles.DRIVER,
+    Roles.STUDENT,
+}
+
+
+TRIP_MANAGEMENT_ROLES = {
+    Roles.SUPER_ADMIN,
+    Roles.UNIVERSITY_ADMIN,
+    Roles.TRANSPORT_MANAGER,
+    Roles.COMPANY_ADMIN,
+}
+
+
+DRIVER_OPERATION_ROLES = {
+    Roles.DRIVER,
+}
+
+
+STUDENT_OPERATION_ROLES = {
+    Roles.STUDENT,
+}
+
+
+COMPANY_ROLES = {
+    Roles.COMPANY_ADMIN,
+}

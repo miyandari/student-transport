@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <title>تست WebSocket موقعیت اتوبوس</title>
+
+    <style>
+        body {
+            font-family: Tahoma, Arial, sans-serif;
+            margin: 40px;
+            direction: rtl;
+        }
+
+        input {
+            width: 600px;
+            padding: 10px;
+            margin: 10px 0;
+        }
+
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+        }
+
+        #output {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f3f3f3;
+            border: 1px solid #ccc;
+            min-height: 180px;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h2>تست WebSocket موقعیت اتوبوس</h2>
+
+    <label>
+        Access Token:
+    </label>
+
+    <br>
+
+    <input
+        id="token"
+        type="text"
+        placeholder="توکن دریافت‌شده از /auth/login را اینجا وارد کنید"
+    >
+
+    <br>
+
+    <button onclick="connectWebSocket()">
+        اتصال
+    </button>
+
+    <button onclick="disconnectWebSocket()">
+        قطع اتصال
+    </button>
+
+    <div id="output"></div>
+
+
+    <script>
+
+        let socket = null;
+
+
+        function log(message) {
+
+            const output =
+                document.getElementById("output");
+
+            output.textContent +=
+                message + "\n";
+        }
+
+
+        function connectWebSocket() {
+
+            const token =
+                document.getElementById("token")
+                .value
+                .trim();
+
+
+            if (!token) {
+
+                log("⚠️ لطفاً Access Token را وارد کنید.");
+
+                return;
+            }
+
+
+            const url =
+                "ws://127.0.0.1:8000/ws/trips/2/location?token="
+                + encodeURIComponent(token);
+
+
+            log("در حال اتصال به Trip 2...");
+
+
+            socket = new WebSocket(url);
+
+
+            socket.onopen = function () {
+
+                log("✅ WebSocket Connected");
+
+            };
+
+
+            socket.onmessage = function (event) {
+
+                log(
+                    "📩 پیام سرور: "
+                    + event.data
+                );
+
+            };
+
+
+            socket.onerror = function () {
+
+                log("❌ خطا در WebSocket");
+
+            };
+
+
+            socket.onclose = function (event) {
+
+                log(
+                    "🔌 اتصال بسته شد. Code: "
+                    + event.code
+                );
+
+            };
+
+        }
+
+
+        function disconnectWebSocket() {
+
+            if (socket) {
+
+                socket.close();
+
+                socket = null;
+
+                log("اتصال توسط کاربر بسته شد.");
+
+            }
+
+        }
+
+    </script>
+
+</body>
+
+</html>
