@@ -503,7 +503,7 @@ def create_contract(
         create_audit_log(
             db,
             user=current_user,
-            action=AuditActions.UPDATE,
+            action=AuditActions.CREATE,
             entity_type="Contract",
             entity_id=contract.id,
             description="ایجاد قرارداد",
