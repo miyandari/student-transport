@@ -1,6 +1,7 @@
 from datetime import date, datetime, timezone
 
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.trip import Trip
@@ -9,6 +10,9 @@ from app.models.schedule import Schedule
 from app.models.driver import Driver
 from app.models.vehicle import Vehicle
 from app.models.university import University
+from app.models.contract import Contract
+from app.models.contract_driver import ContractDriver
+from app.models.contract_vehicle import ContractVehicle
 
 
 TRIP_STATUSES = {
@@ -291,8 +295,6 @@ def get_trip_time_interval(
     """
     بازه زمانی سفر را بر اساس زمان حرکت و برنامه زمانی
     محاسبه می‌کند.
-
-    اگر زمان پایان قابل محاسبه نباشد، مقدار پایان None است.
     """
 
     trip_start = normalize_utc_datetime(
@@ -318,6 +320,158 @@ def get_trip_time_interval(
         return trip_start, None
 
     return trip_start, trip_end
+
+
+# =========================================================
+# Contract Validation
+# =========================================================
+
+def get_service_contract(
+    db: Session,
+    service: Service,
+) -> Contract | None:
+
+    if service.contract_id is None:
+        return None
+
+    contract = (
+        db.query(Contract)
+        .filter(
+            Contract.id == service.contract_id
+        )
+        .first()
+    )
+
+    if contract is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="قرارداد سرویس پیدا نشد",
+        )
+
+    if not contract.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="قرارداد سرویس غیرفعال است",
+        )
+
+    if contract.university_id != service.university_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="قرارداد سرویس متعلق به دانشگاه سرویس نیست",
+        )
+
+    return contract
+
+
+def validate_trip_contract_date(
+    trip_date: date,
+    contract: Contract | None,
+) -> None:
+
+    if contract is None:
+        return
+
+    if trip_date < contract.start_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تاریخ سفر قبل از شروع قرارداد است",
+        )
+
+    if trip_date > contract.end_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تاریخ سفر بعد از پایان قرارداد است",
+        )
+
+
+def validate_driver_contract_assignment(
+    db: Session,
+    driver: Driver,
+    contract: Contract | None,
+    trip_date: date,
+) -> None:
+
+    if contract is None:
+        return
+
+    assignment = (
+        db.query(ContractDriver)
+        .filter(
+            ContractDriver.contract_id == contract.id,
+            ContractDriver.driver_id == driver.id,
+            ContractDriver.is_active.is_(True),
+        )
+        .first()
+    )
+
+    if assignment is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="راننده به قرارداد این سفر تخصیص داده نشده است",
+        )
+
+    if (
+        assignment.start_date is not None
+        and trip_date < assignment.start_date
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="راننده در تاریخ سفر هنوز در قرارداد فعال نشده است",
+        )
+
+    if (
+        assignment.end_date is not None
+        and trip_date > assignment.end_date
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="اعتبار تخصیص راننده در تاریخ سفر به پایان رسیده است",
+        )
+
+
+def validate_vehicle_contract_assignment(
+    db: Session,
+    vehicle: Vehicle,
+    contract: Contract | None,
+    trip_date: date,
+) -> None:
+
+    if contract is None:
+        return
+
+    assignment = (
+        db.query(ContractVehicle)
+        .filter(
+            ContractVehicle.contract_id == contract.id,
+            ContractVehicle.vehicle_id == vehicle.id,
+            ContractVehicle.is_active.is_(True),
+        )
+        .first()
+    )
+
+    if assignment is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="خودرو به قرارداد این سفر تخصیص داده نشده است",
+        )
+
+    if (
+        assignment.start_date is not None
+        and trip_date < assignment.start_date
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="خودرو در تاریخ سفر هنوز در قرارداد فعال نشده است",
+        )
+
+    if (
+        assignment.end_date is not None
+        and trip_date > assignment.end_date
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="اعتبار تخصیص خودرو در تاریخ سفر به پایان رسیده است",
+        )
 
 
 # =========================================================
@@ -396,6 +550,40 @@ def validate_new_trip_status(
     return status_value
 
 
+def validate_trip_date_and_time(
+    trip_date: date,
+    planned_departure_time: datetime,
+) -> datetime:
+
+    planned_departure_time = normalize_utc_datetime(
+        planned_departure_time
+    )
+
+    if planned_departure_time.date() != trip_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تاریخ زمان حرکت با تاریخ سفر مطابقت ندارد",
+        )
+
+    return planned_departure_time
+
+
+def validate_schedule_for_trip_date(
+    schedule: Schedule,
+    trip_date: date,
+) -> None:
+
+    expected_day = get_system_day_of_week(
+        trip_date
+    )
+
+    if schedule.day_of_week != expected_day:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تاریخ انتخاب‌شده با روز هفته برنامه زمانی مطابقت ندارد",
+        )
+
+
 def validate_schedule_departure_time(
     schedule: Schedule,
     planned_departure_time: datetime,
@@ -405,14 +593,10 @@ def validate_schedule_departure_time(
         planned_departure_time
     )
 
-    expected_time = datetime.combine(
-        date.today(),
-        schedule.departure_time,
-    ).replace(
-        tzinfo=timezone.utc
-    ).time()
-
-    if planned_departure_time.time() != expected_time:
+    if (
+        planned_departure_time.time()
+        != schedule.departure_time
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="زمان حرکت سفر با زمان حرکت برنامه زمانی مطابقت ندارد",
@@ -505,7 +689,7 @@ def check_duplicate_schedule_trip(
 
 
 # =========================================================
-# Resource conflict
+# Resource Conflict
 # =========================================================
 
 def intervals_overlap(
@@ -599,7 +783,7 @@ def check_resource_conflict(
 
 
 # =========================================================
-# Status management
+# Status Management
 # =========================================================
 
 def validate_status_transition(
@@ -607,13 +791,8 @@ def validate_status_transition(
     new_status: str,
 ) -> None:
 
-    current_status = (
-        current_status.strip().lower()
-    )
-
-    new_status = (
-        new_status.strip().lower()
-    )
+    current_status = current_status.strip().lower()
+    new_status = new_status.strip().lower()
 
     if current_status not in TRIP_STATUSES:
         raise HTTPException(
@@ -695,6 +874,16 @@ def create_trip(
         university_id=university_id,
     )
 
+    contract = get_service_contract(
+        db=db,
+        service=service,
+    )
+
+    validate_trip_contract_date(
+        trip_date=trip_date,
+        contract=contract,
+    )
+
     schedule = None
 
     if schedule_id is not None:
@@ -703,6 +892,11 @@ def create_trip(
             schedule_id=schedule_id,
             university_id=university_id,
             service_id=service.id,
+        )
+
+        validate_schedule_for_trip_date(
+            schedule=schedule,
+            trip_date=trip_date,
         )
 
     driver = None
@@ -714,6 +908,13 @@ def create_trip(
             university_id=university_id,
         )
 
+        validate_driver_contract_assignment(
+            db=db,
+            driver=driver,
+            contract=contract,
+            trip_date=trip_date,
+        )
+
     vehicle = None
 
     if vehicle_id is not None:
@@ -721,6 +922,13 @@ def create_trip(
             db=db,
             vehicle_id=vehicle_id,
             university_id=university_id,
+        )
+
+        validate_vehicle_contract_assignment(
+            db=db,
+            vehicle=vehicle,
+            contract=contract,
+            trip_date=trip_date,
         )
 
     validate_driver_vehicle(
@@ -742,20 +950,17 @@ def create_trip(
     )
 
     planned_departure_time = (
-        normalize_utc_datetime(
-            planned_departure_time
+        validate_trip_date_and_time(
+            trip_date=trip_date,
+            planned_departure_time=planned_departure_time,
         )
     )
 
     if schedule is not None:
-        if (
-            planned_departure_time.time()
-            != schedule.departure_time
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="زمان حرکت سفر با زمان حرکت برنامه زمانی مطابقت ندارد",
-            )
+        validate_schedule_departure_time(
+            schedule=schedule,
+            planned_departure_time=planned_departure_time,
+        )
 
     check_duplicate_trip(
         db=db,
@@ -792,8 +997,16 @@ def create_trip(
     )
 
     db.add(trip)
-    db.commit()
-    db.refresh(trip)
+
+    try:
+        db.commit()
+        db.refresh(trip)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ایجاد سفر به دلیل تکراری بودن یا ناسازگاری اطلاعات انجام نشد",
+        )
 
     return trip
 
@@ -826,21 +1039,26 @@ def create_trip_from_schedule(
         university_id=university_id,
     )
 
+    validate_schedule_for_trip_date(
+        schedule=schedule,
+        trip_date=trip_date,
+    )
+
     service = get_service(
         db=db,
         service_id=schedule.service_id,
         university_id=university_id,
     )
 
-    system_day_of_week = (
-        get_system_day_of_week(trip_date)
+    contract = get_service_contract(
+        db=db,
+        service=service,
     )
 
-    if schedule.day_of_week != system_day_of_week:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="تاریخ انتخاب‌شده با روز هفته برنامه زمانی مطابقت ندارد",
-        )
+    validate_trip_contract_date(
+        trip_date=trip_date,
+        contract=contract,
+    )
 
     check_duplicate_schedule_trip(
         db=db,
@@ -857,6 +1075,13 @@ def create_trip_from_schedule(
             university_id=university_id,
         )
 
+        validate_driver_contract_assignment(
+            db=db,
+            driver=driver,
+            contract=contract,
+            trip_date=trip_date,
+        )
+
     vehicle = None
 
     if vehicle_id is not None:
@@ -864,6 +1089,13 @@ def create_trip_from_schedule(
             db=db,
             vehicle_id=vehicle_id,
             university_id=university_id,
+        )
+
+        validate_vehicle_contract_assignment(
+            db=db,
+            vehicle=vehicle,
+            contract=contract,
+            trip_date=trip_date,
         )
 
     validate_driver_vehicle(
@@ -918,8 +1150,16 @@ def create_trip_from_schedule(
     )
 
     db.add(trip)
-    db.commit()
-    db.refresh(trip)
+
+    try:
+        db.commit()
+        db.refresh(trip)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ایجاد سفر به دلیل تکراری بودن یا ناسازگاری اطلاعات انجام نشد",
+        )
 
     return trip
 
@@ -980,6 +1220,19 @@ def generate_daily_trips(
             university_id=university_id,
         )
 
+        contract = get_service_contract(
+            db=db,
+            service=service,
+        )
+
+        try:
+            validate_trip_contract_date(
+                trip_date=trip_date,
+                contract=contract,
+            )
+        except HTTPException:
+            continue
+
         planned_departure_time = datetime.combine(
             trip_date,
             schedule.departure_time,
@@ -1015,7 +1268,14 @@ def generate_daily_trips(
         db.add(trip)
         created_trips.append(trip)
 
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تولید سفرهای روزانه به دلیل ناسازگاری یا تکراری بودن اطلاعات کامل نشد",
+        )
 
     for trip in created_trips:
         db.refresh(trip)
@@ -1058,6 +1318,25 @@ def assign_trip_resources(
             detail="حداقل راننده یا خودرو باید مشخص شود",
         )
 
+    service = (
+        db.query(Service)
+        .filter(
+            Service.id == trip.service_id
+        )
+        .first()
+    )
+
+    if service is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="سرویس سفر پیدا نشد",
+        )
+
+    contract = get_service_contract(
+        db=db,
+        service=service,
+    )
+
     driver = None
 
     if driver_id is not None:
@@ -1067,12 +1346,38 @@ def assign_trip_resources(
             university_id=trip.university_id,
         )
 
+        validate_driver_contract_assignment(
+            db=db,
+            driver=driver,
+            contract=contract,
+            trip_date=trip.trip_date,
+        )
+    elif trip.driver_id is not None:
+        driver = get_driver(
+            db=db,
+            driver_id=trip.driver_id,
+            university_id=trip.university_id,
+        )
+
     vehicle = None
 
     if vehicle_id is not None:
         vehicle = get_vehicle(
             db=db,
             vehicle_id=vehicle_id,
+            university_id=trip.university_id,
+        )
+
+        validate_vehicle_contract_assignment(
+            db=db,
+            vehicle=vehicle,
+            contract=contract,
+            trip_date=trip.trip_date,
+        )
+    elif trip.vehicle_id is not None:
+        vehicle = get_vehicle(
+            db=db,
+            vehicle_id=trip.vehicle_id,
             university_id=trip.university_id,
         )
 
@@ -1099,23 +1404,24 @@ def assign_trip_resources(
             resource_name="خودرو",
         )
 
-    trip.driver_id = (
-        driver.id
-        if driver is not None
-        else None
-    )
+    if driver_id is not None:
+        trip.driver_id = driver.id
 
-    trip.vehicle_id = (
-        vehicle.id
-        if vehicle is not None
-        else None
-    )
+    if vehicle_id is not None:
+        trip.vehicle_id = vehicle.id
 
-    if vehicle is not None:
+    if vehicle_id is not None and vehicle is not None:
         trip.seated_capacity = vehicle.capacity
 
-    db.commit()
-    db.refresh(trip)
+    try:
+        db.commit()
+        db.refresh(trip)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تخصیص منابع به سفر به دلیل ناسازگاری اطلاعات انجام نشد",
+        )
 
     return trip
 
@@ -1130,9 +1436,7 @@ def update_trip_status(
     new_status: str,
 ) -> Trip:
 
-    new_status = (
-        new_status.strip().lower()
-    )
+    new_status = new_status.strip().lower()
 
     if new_status not in TRIP_STATUSES:
         raise HTTPException(
@@ -1181,7 +1485,14 @@ def update_trip_status(
         new_status=new_status,
     )
 
-    db.commit()
-    db.refresh(trip)
+    try:
+        db.commit()
+        db.refresh(trip)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تغییر وضعیت سفر به دلیل ناسازگاری اطلاعات انجام نشد",
+        )
 
     return trip

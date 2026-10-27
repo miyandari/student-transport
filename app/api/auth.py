@@ -5,13 +5,34 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
 from app.schemas.auth import TokenResponse
-from app.core.security import verify_password, create_access_token
+from app.core.security import verify_password, create_access_token, bcrypt
 
 
 router = APIRouter(
     prefix="/auth",
     tags=["Authentication"],
 )
+
+
+# برای جلوگیری از تفاوت محسوس زمان پاسخ بین
+# «کاربر موجود» و «کاربر ناموجود».
+#
+# این hash فقط برای بررسی dummy استفاده می‌شود
+# و هرگز نباید به‌عنوان رمز عبور واقعی استفاده شود.
+DUMMY_PASSWORD_HASH = bcrypt.hashpw(
+    b"invalid-login-dummy-password",
+    bcrypt.gensalt(),
+).decode("utf-8")
+
+
+def invalid_credentials() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="نام کاربری یا رمز عبور اشتباه است",
+        headers={
+            "WWW-Authenticate": "Bearer",
+        },
+    )
 
 
 @router.post(
@@ -29,56 +50,40 @@ def login(
     user = (
         db.query(User)
         .filter(
-            User.username == form_data.username
+            User.username == form_data.username,
         )
         .first()
     )
 
     # --------------------------------
-    # بررسی کاربر و رمز عبور
+    # بررسی رمز عبور
     # --------------------------------
 
-    # پیام خطا در حالت کاربر ناموجود،
-    # حساب غیرفعال و رمز عبور اشتباه یکسان است
-    # تا وجود یا وضعیت حساب افشا نشود.
     if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="نام کاربری یا رمز عبور اشتباه است",
-            headers={
-                "WWW-Authenticate": "Bearer",
-            },
+
+        # حتی در صورت نبودن کاربر، bcrypt اجرا می‌شود
+        # تا زمان پاسخ قابل مقایسه با حساب واقعی باشد.
+        verify_password(
+            form_data.password,
+            DUMMY_PASSWORD_HASH,
         )
 
-    # ابتدا رمز عبور بررسی می‌شود.
-    # حتی برای حساب غیرفعال نیز رمز اشتباه نباید
-    # باعث افشای وضعیت حساب شود.
+        raise invalid_credentials()
+
     password_is_valid = verify_password(
         form_data.password,
         user.password_hash,
     )
 
     if not password_is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="نام کاربری یا رمز عبور اشتباه است",
-            headers={
-                "WWW-Authenticate": "Bearer",
-            },
-        )
+        raise invalid_credentials()
 
     # --------------------------------
     # بررسی فعال بودن حساب
     # --------------------------------
 
     if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="نام کاربری یا رمز عبور اشتباه است",
-            headers={
-                "WWW-Authenticate": "Bearer",
-            },
-        )
+        raise invalid_credentials()
 
     # --------------------------------
     # ایجاد Access Token

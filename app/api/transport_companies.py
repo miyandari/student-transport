@@ -19,21 +19,51 @@ router = APIRouter(
 )
 
 
-MANAGEMENT_ROLES = {
+VIEW_ROLES = {
     Roles.SUPER_ADMIN,
     Roles.UNIVERSITY_ADMIN,
     Roles.TRANSPORT_MANAGER,
+    Roles.COMPANY_ADMIN,
 }
+
+
+def check_super_admin(
+    current_user: User,
+) -> None:
+
+    if current_user.role != Roles.SUPER_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="فقط مدیر سامانه مجوز مدیریت شرکت‌های حمل‌ونقل را دارد",
+        )
+
+
+def check_view_role(
+    current_user: User,
+) -> None:
+
+    if current_user.role not in VIEW_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="شما مجوز مشاهده شرکت‌های حمل‌ونقل را ندارید",
+        )
 
 
 def get_company_or_404(
     db: Session,
     company_id: int,
-):
+) -> TransportCompany:
+
+    if company_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="شناسه شرکت نامعتبر است",
+        )
+
     company = (
         db.query(TransportCompany)
         .filter(
-            TransportCompany.id == company_id
+            TransportCompany.id == company_id,
         )
         .first()
     )
@@ -47,13 +77,37 @@ def get_company_or_404(
     return company
 
 
-def normalize_text(value: str | None):
+def normalize_text(
+    value: str | None,
+) -> str | None:
+
     if value is None:
         return None
 
     value = value.strip()
 
     return value if value else None
+
+
+def validate_company_name(
+    name: str | None,
+) -> str:
+
+    if name is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="نام شرکت الزامی است",
+        )
+
+    name = name.strip()
+
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="نام شرکت نمی‌تواند خالی باشد",
+        )
+
+    return name
 
 
 @router.post(
@@ -66,22 +120,17 @@ def create_transport_company(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role not in MANAGEMENT_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="شما مجوز ایجاد شرکت حمل‌ونقل را ندارید",
-        )
 
-    name = data.name.strip()
+    check_super_admin(
+        current_user,
+    )
 
-    if not name:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="نام شرکت نمی‌تواند خالی باشد",
-        )
+    name = validate_company_name(
+        data.name,
+    )
 
     registration_number = normalize_text(
-        data.registration_number
+        data.registration_number,
     )
 
     if registration_number:
@@ -89,7 +138,7 @@ def create_transport_company(
             db.query(TransportCompany)
             .filter(
                 TransportCompany.registration_number
-                == registration_number
+                == registration_number,
             )
             .first()
         )
@@ -109,8 +158,13 @@ def create_transport_company(
     )
 
     db.add(company)
-    db.commit()
-    db.refresh(company)
+
+    try:
+        db.commit()
+        db.refresh(company)
+    except Exception:
+        db.rollback()
+        raise
 
     return company
 
@@ -124,22 +178,47 @@ def get_transport_companies(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role not in MANAGEMENT_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="شما مجوز مشاهده فهرست شرکت‌ها را ندارید",
+
+    check_view_role(
+        current_user,
+    )
+
+    # مدیر شرکت فقط شرکت خودش را مشاهده می‌کند.
+    if current_user.role == Roles.COMPANY_ADMIN:
+
+        if current_user.transport_company_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="حساب کاربری شما به شرکت حمل‌ونقل متصل نیست",
+            )
+
+        query = (
+            db.query(TransportCompany)
+            .filter(
+                TransportCompany.id
+                == current_user.transport_company_id,
+            )
         )
+
+        if is_active is not None:
+            query = query.filter(
+                TransportCompany.is_active == is_active,
+            )
+
+        return query.all()
 
     query = db.query(TransportCompany)
 
     if is_active is not None:
         query = query.filter(
-            TransportCompany.is_active == is_active
+            TransportCompany.is_active == is_active,
         )
 
     return (
         query
-        .order_by(TransportCompany.id.desc())
+        .order_by(
+            TransportCompany.id.desc(),
+        )
         .all()
     )
 
@@ -152,6 +231,7 @@ def get_my_company(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+
     if current_user.role != Roles.COMPANY_ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -164,12 +244,10 @@ def get_my_company(
             detail="حساب کاربری شما به شرکت حمل‌ونقل متصل نیست",
         )
 
-    company = get_company_or_404(
+    return get_company_or_404(
         db,
         current_user.transport_company_id,
     )
-
-    return company
 
 
 @router.get(
@@ -181,6 +259,11 @@ def get_transport_company(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+
+    check_view_role(
+        current_user,
+    )
+
     if current_user.role == Roles.COMPANY_ADMIN:
 
         if current_user.transport_company_id != company_id:
@@ -188,12 +271,6 @@ def get_transport_company(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="شما فقط به شرکت خود دسترسی دارید",
             )
-
-    elif current_user.role not in MANAGEMENT_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="شما مجوز مشاهده شرکت را ندارید",
-        )
 
     return get_company_or_404(
         db,
@@ -211,35 +288,22 @@ def update_transport_company(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role == Roles.COMPANY_ADMIN:
 
-        if current_user.transport_company_id != company_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="شما فقط می‌توانید اطلاعات شرکت خود را ویرایش کنید",
-            )
-
-    elif current_user.role not in MANAGEMENT_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="شما مجوز ویرایش اطلاعات شرکت را ندارید",
-        )
+    check_super_admin(
+        current_user,
+    )
 
     company = get_company_or_404(
         db,
         company_id,
     )
 
-    name = data.name.strip()
-
-    if not name:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="نام شرکت نمی‌تواند خالی باشد",
-        )
+    name = validate_company_name(
+        data.name,
+    )
 
     registration_number = normalize_text(
-        data.registration_number
+        data.registration_number,
     )
 
     if registration_number:
@@ -263,13 +327,14 @@ def update_transport_company(
     company.registration_number = registration_number
     company.phone = normalize_text(data.phone)
     company.address = normalize_text(data.address)
+    company.is_active = data.is_active
 
-    # شرکت نمی‌تواند از داخل حساب خودش وضعیت فعال/غیرفعال را تغییر دهد.
-    if current_user.role in MANAGEMENT_ROLES:
-        company.is_active = data.is_active
-
-    db.commit()
-    db.refresh(company)
+    try:
+        db.commit()
+        db.refresh(company)
+    except Exception:
+        db.rollback()
+        raise
 
     return company
 
@@ -284,11 +349,10 @@ def update_transport_company_status(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role not in MANAGEMENT_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="فقط مدیریت دانشگاه می‌تواند وضعیت شرکت را تغییر دهد",
-        )
+
+    check_super_admin(
+        current_user,
+    )
 
     company = get_company_or_404(
         db,
@@ -297,7 +361,11 @@ def update_transport_company_status(
 
     company.is_active = data.is_active
 
-    db.commit()
-    db.refresh(company)
+    try:
+        db.commit()
+        db.refresh(company)
+    except Exception:
+        db.rollback()
+        raise
 
     return company

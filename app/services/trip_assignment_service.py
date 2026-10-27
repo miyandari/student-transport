@@ -35,17 +35,17 @@ def sync_trip_with_assignment(
     assignment: TripAssignment,
 ):
     """
-    وضعیت فعلی سفر را با تخصیص فعال هماهنگ می‌کند.
+    وضعیت فعلی سفر را دقیقاً با تخصیص فعال هماهنگ می‌کند.
 
-    اگر تخصیص فقط راننده یا فقط خودرو داشته باشد،
-    بخش دیگر وضعیت فعلی Trip حفظ می‌شود.
+    توجه:
+    اگر تخصیص فقط راننده داشته باشد، خودرو قبلی Trip حذف می‌شود.
+    اگر تخصیص فقط خودرو داشته باشد، راننده قبلی Trip حذف می‌شود.
+
+    بنابراین Trip همیشه بازتاب‌دهنده دقیق تخصیص فعال است.
     """
 
-    if assignment.driver_id is not None:
-        trip.driver_id = assignment.driver_id
-
-    if assignment.vehicle_id is not None:
-        trip.vehicle_id = assignment.vehicle_id
+    trip.driver_id = assignment.driver_id
+    trip.vehicle_id = assignment.vehicle_id
 
     db.flush()
 
@@ -66,7 +66,7 @@ def activate_assignment(
     trip = (
         db.query(Trip)
         .filter(
-            Trip.id == assignment.trip_id
+            Trip.id == assignment.trip_id,
         )
         .first()
     )
@@ -83,7 +83,10 @@ def activate_assignment(
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="برای فعال‌سازی تخصیص، حداقل راننده یا خودرو باید مشخص باشد",
+            detail=(
+                "برای فعال‌سازی تخصیص، حداقل راننده "
+                "یا خودرو باید مشخص باشد"
+            ),
         )
 
     current_assignment = get_active_assignment(
@@ -134,7 +137,7 @@ def deactivate_assignment(
     trip = (
         db.query(Trip)
         .filter(
-            Trip.id == assignment.trip_id
+            Trip.id == assignment.trip_id,
         )
         .first()
     )
@@ -179,7 +182,7 @@ def deactivate_assignment(
             return assignment
 
     # اگر تخصیص اصلی بوده یا تخصیص قبلی وجود نداشته،
-    # وضعیت فعلی سفر پاک می‌شود.
+    # منابع فعلی سفر پاک می‌شوند.
     trip.driver_id = None
     trip.vehicle_id = None
 

@@ -12,7 +12,6 @@ from app.schemas.station import (
 )
 from app.core.dependencies import (
     get_current_user,
-    require_roles,
     check_company_user,
 )
 from app.core.roles import Roles
@@ -28,7 +27,6 @@ MANAGEMENT_ROLES = {
     Roles.SUPER_ADMIN,
     Roles.UNIVERSITY_ADMIN,
     Roles.TRANSPORT_MANAGER,
-    Roles.COMPANY_ADMIN,
 }
 
 
@@ -122,7 +120,7 @@ def check_university_access(
         )
 
 
-def check_station_access(
+def check_station_view_access(
     db: Session,
     current_user: User,
     university_id: int,
@@ -170,29 +168,11 @@ def validate_university(
     return university
 
 
-@router.post(
-    "/",
-    response_model=StationResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_station(
+def validate_station_data(
+    db: Session,
     station_data: StationCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-
-    check_management_role(current_user)
-
-    validate_university(
-        db,
-        station_data.university_id,
-    )
-
-    check_station_access(
-        db,
-        current_user,
-        station_data.university_id,
-    )
+    current_station_id: int | None = None,
+) -> tuple[str, str | None]:
 
     name = normalize_text(
         station_data.name,
@@ -208,8 +188,6 @@ def create_station(
             detail="نام ایستگاه نمی‌تواند خالی باشد",
         )
 
-    # اگر یکی از مختصات وارد شده باشد،
-    # دیگری نیز باید وارد شود.
     if (
         (station_data.latitude is None)
         != (station_data.longitude is None)
@@ -219,15 +197,21 @@ def create_station(
             detail="عرض و طول جغرافیایی باید هر دو وارد شوند",
         )
 
-    existing_station = (
+    query = (
         db.query(Station)
         .filter(
             Station.university_id
             == station_data.university_id,
             Station.name == name,
         )
-        .first()
     )
+
+    if current_station_id is not None:
+        query = query.filter(
+            Station.id != current_station_id,
+        )
+
+    existing_station = query.first()
 
     if existing_station:
         raise HTTPException(
@@ -235,12 +219,42 @@ def create_station(
             detail="ایستگاهی با این نام قبلاً در این دانشگاه ثبت شده است",
         )
 
-    # شرکت می‌تواند ایستگاه را پیشنهاد/ثبت کند،
-    # اما فعال شدن نهایی آن باید توسط مدیریت دانشگاه انجام شود.
-    is_active = station_data.is_active
+    return name, address
 
-    if current_user.role == Roles.COMPANY_ADMIN:
-        is_active = False
+
+# =========================================================
+# Create Station
+# =========================================================
+
+@router.post(
+    "/",
+    response_model=StationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_station(
+    station_data: StationCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+
+    check_management_role(
+        current_user,
+    )
+
+    validate_university(
+        db,
+        station_data.university_id,
+    )
+
+    check_university_access(
+        current_user,
+        station_data.university_id,
+    )
+
+    name, address = validate_station_data(
+        db,
+        station_data,
+    )
 
     station = Station(
         university_id=station_data.university_id,
@@ -248,15 +262,24 @@ def create_station(
         address=address,
         latitude=station_data.latitude,
         longitude=station_data.longitude,
-        is_active=is_active,
+        is_active=station_data.is_active,
     )
 
     db.add(station)
-    db.commit()
-    db.refresh(station)
+
+    try:
+        db.commit()
+        db.refresh(station)
+    except Exception:
+        db.rollback()
+        raise
 
     return station
 
+
+# =========================================================
+# Get Stations
+# =========================================================
 
 @router.get(
     "/",
@@ -269,13 +292,16 @@ def get_stations(
     current_user: User = Depends(get_current_user),
 ):
 
-    check_view_role(current_user)
+    check_view_role(
+        current_user,
+    )
 
     query = db.query(Station)
 
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
     # Super Admin
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
+
     if current_user.role == Roles.SUPER_ADMIN:
 
         if university_id is not None:
@@ -283,12 +309,15 @@ def get_stations(
                 Station.university_id == university_id,
             )
 
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
     # Company Admin
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
+
     elif current_user.role == Roles.COMPANY_ADMIN:
 
-        check_company_user(current_user)
+        check_company_user(
+            current_user,
+        )
 
         query = (
             query
@@ -306,7 +335,6 @@ def get_stations(
 
         if university_id is not None:
 
-            # ابتدا اطمینان از دسترسی شرکت به دانشگاه
             check_company_university_access(
                 db,
                 current_user,
@@ -317,9 +345,10 @@ def get_stations(
                 Station.university_id == university_id,
             )
 
-    # ---------------------------------------------------------
-    # University Admin / Transport Manager / سایر کاربران
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
+    # University Users / Driver / Student
+    # -----------------------------------------------------
+
     else:
 
         if current_user.university_id is None:
@@ -348,6 +377,10 @@ def get_stations(
     )
 
 
+# =========================================================
+# Get Station By ID
+# =========================================================
+
 @router.get(
     "/{station_id}",
     response_model=StationResponse,
@@ -358,7 +391,15 @@ def get_station(
     current_user: User = Depends(get_current_user),
 ):
 
-    check_view_role(current_user)
+    check_view_role(
+        current_user,
+    )
+
+    if station_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="شناسه ایستگاه نامعتبر است",
+        )
 
     station = (
         db.query(Station)
@@ -374,7 +415,7 @@ def get_station(
             detail="ایستگاه موردنظر پیدا نشد",
         )
 
-    check_station_access(
+    check_station_view_access(
         db,
         current_user,
         station.university_id,
@@ -382,6 +423,10 @@ def get_station(
 
     return station
 
+
+# =========================================================
+# Update Station
+# =========================================================
 
 @router.patch(
     "/{station_id}",
@@ -394,7 +439,15 @@ def update_station(
     current_user: User = Depends(get_current_user),
 ):
 
-    check_management_role(current_user)
+    check_management_role(
+        current_user,
+    )
+
+    if station_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="شناسه ایستگاه نامعتبر است",
+        )
 
     station = (
         db.query(Station)
@@ -410,68 +463,37 @@ def update_station(
             detail="ایستگاه موردنظر پیدا نشد",
         )
 
-    if station_data.university_id != station.university_id:
+    check_university_access(
+        current_user,
+        station.university_id,
+    )
+
+    if (
+        station_data.university_id
+        != station.university_id
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="امکان تغییر دانشگاه ایستگاه وجود ندارد",
         )
 
-    check_station_access(
+    name, address = validate_station_data(
         db,
-        current_user,
-        station.university_id,
+        station_data,
+        current_station_id=station.id,
     )
-
-    name = normalize_text(
-        station_data.name,
-    )
-
-    address = normalize_text(
-        station_data.address,
-    )
-
-    if not name:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="نام ایستگاه نمی‌تواند خالی باشد",
-        )
-
-    if (
-        (station_data.latitude is None)
-        != (station_data.longitude is None)
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="عرض و طول جغرافیایی باید هر دو وارد شوند",
-        )
-
-    existing_station = (
-        db.query(Station)
-        .filter(
-            Station.university_id
-            == station.university_id,
-            Station.name == name,
-            Station.id != station.id,
-        )
-        .first()
-    )
-
-    if existing_station:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ایستگاهی با این نام قبلاً در این دانشگاه ثبت شده است",
-        )
 
     station.name = name
     station.address = address
     station.latitude = station_data.latitude
     station.longitude = station_data.longitude
+    station.is_active = station_data.is_active
 
-    # شرکت اجازه فعال/غیرفعال کردن نهایی ایستگاه را ندارد.
-    if current_user.role != Roles.COMPANY_ADMIN:
-        station.is_active = station_data.is_active
-
-    db.commit()
-    db.refresh(station)
+    try:
+        db.commit()
+        db.refresh(station)
+    except Exception:
+        db.rollback()
+        raise
 
     return station

@@ -29,7 +29,6 @@ MANAGEMENT_ROLES = {
     Roles.SUPER_ADMIN,
     Roles.UNIVERSITY_ADMIN,
     Roles.TRANSPORT_MANAGER,
-    Roles.COMPANY_ADMIN,
 }
 
 
@@ -70,6 +69,12 @@ def get_route_or_404(
     route_id: int,
 ) -> Route:
 
+    if route_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="شناسه مسیر نامعتبر است",
+        )
+
     route = (
         db.query(Route)
         .filter(Route.id == route_id)
@@ -89,6 +94,12 @@ def get_station_or_404(
     db: Session,
     station_id: int,
 ) -> Station:
+
+    if station_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="شناسه ایستگاه نامعتبر است",
+        )
 
     station = (
         db.query(Station)
@@ -111,7 +122,9 @@ def check_company_route_access(
     route: Route,
 ) -> Contract:
 
-    check_company_user(current_user)
+    check_company_user(
+        current_user,
+    )
 
     contract = (
         db.query(Contract)
@@ -128,34 +141,6 @@ def check_company_route_access(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="شرکت شما با دانشگاه این مسیر قرارداد فعال ندارد",
-        )
-
-    return contract
-
-
-def check_company_station_access(
-    db: Session,
-    current_user: User,
-    station: Station,
-) -> Contract:
-
-    check_company_user(current_user)
-
-    contract = (
-        db.query(Contract)
-        .filter(
-            Contract.transport_company_id
-            == current_user.transport_company_id,
-            Contract.university_id == station.university_id,
-            Contract.is_active.is_(True),
-        )
-        .first()
-    )
-
-    if contract is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="شرکت شما با دانشگاه این ایستگاه قرارداد فعال ندارد",
         )
 
     return contract
@@ -182,7 +167,6 @@ def check_route_access(
 
 
 def validate_route_and_station(
-    db: Session,
     current_user: User,
     route: Route,
     station: Station,
@@ -207,15 +191,9 @@ def validate_route_and_station(
         )
 
     if current_user.role == Roles.COMPANY_ADMIN:
-        check_company_route_access(
-            db,
-            current_user,
-            route,
-        )
-    else:
-        check_university_access(
-            current_user,
-            route.university_id,
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="شرکت حمل‌ونقل مجوز مدیریت ایستگاه‌های مسیر را ندارد",
         )
 
 
@@ -230,7 +208,9 @@ def create_route_station(
     current_user: User = Depends(get_current_user),
 ):
 
-    check_management_role(current_user)
+    check_management_role(
+        current_user,
+    )
 
     route = get_route_or_404(
         db,
@@ -242,8 +222,12 @@ def create_route_station(
         data.station_id,
     )
 
+    check_university_access(
+        current_user,
+        route.university_id,
+    )
+
     validate_route_and_station(
-        db,
         current_user,
         route,
         station,
@@ -288,8 +272,13 @@ def create_route_station(
     )
 
     db.add(route_station)
-    db.commit()
-    db.refresh(route_station)
+
+    try:
+        db.commit()
+        db.refresh(route_station)
+    except Exception:
+        db.rollback()
+        raise
 
     return route_station
 
@@ -305,16 +294,41 @@ def get_route_stations(
     current_user: User = Depends(get_current_user),
 ):
 
-    check_view_role(current_user)
+    check_view_role(
+        current_user,
+    )
+
+    if route_id is not None and route_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="شناسه مسیر نامعتبر است",
+        )
+
+    if station_id is not None and station_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="شناسه ایستگاه نامعتبر است",
+        )
 
     query = db.query(RouteStation)
 
-    # ---------------------------------------------------------
-    # Company Admin
-    # ---------------------------------------------------------
-    if current_user.role == Roles.COMPANY_ADMIN:
+    if current_user.role == Roles.SUPER_ADMIN:
 
-        check_company_user(current_user)
+        if route_id is not None:
+            query = query.filter(
+                RouteStation.route_id == route_id,
+            )
+
+        if station_id is not None:
+            query = query.filter(
+                RouteStation.station_id == station_id,
+            )
+
+    elif current_user.role == Roles.COMPANY_ADMIN:
+
+        check_company_user(
+            current_user,
+        )
 
         query = (
             query
@@ -333,10 +347,17 @@ def get_route_stations(
             )
         )
 
-    # ---------------------------------------------------------
-    # سایر کاربران
-    # ---------------------------------------------------------
-    elif current_user.role != Roles.SUPER_ADMIN:
+        if route_id is not None:
+            query = query.filter(
+                RouteStation.route_id == route_id,
+            )
+
+        if station_id is not None:
+            query = query.filter(
+                RouteStation.station_id == station_id,
+            )
+
+    else:
 
         if current_user.university_id is None:
             raise HTTPException(
@@ -356,18 +377,19 @@ def get_route_stations(
             )
         )
 
-    if route_id is not None:
-        query = query.filter(
-            RouteStation.route_id == route_id,
-        )
+        if route_id is not None:
+            query = query.filter(
+                RouteStation.route_id == route_id,
+            )
 
-    if station_id is not None:
-        query = query.filter(
-            RouteStation.station_id == station_id,
-        )
+        if station_id is not None:
+            query = query.filter(
+                RouteStation.station_id == station_id,
+            )
 
     return (
         query
+        .distinct()
         .order_by(
             RouteStation.route_id,
             RouteStation.stop_order,
@@ -386,7 +408,15 @@ def get_route_station(
     current_user: User = Depends(get_current_user),
 ):
 
-    check_view_role(current_user)
+    check_view_role(
+        current_user,
+    )
+
+    if route_station_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="شناسه ایستگاه مسیر نامعتبر است",
+        )
 
     route_station = (
         db.query(RouteStation)
@@ -427,7 +457,15 @@ def update_route_station(
     current_user: User = Depends(get_current_user),
 ):
 
-    check_management_role(current_user)
+    check_management_role(
+        current_user,
+    )
+
+    if route_station_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="شناسه ایستگاه مسیر نامعتبر است",
+        )
 
     route_station = (
         db.query(RouteStation)
@@ -448,10 +486,9 @@ def update_route_station(
         route_station.route_id,
     )
 
-    check_route_access(
-        db,
+    check_university_access(
         current_user,
-        route,
+        route.university_id,
     )
 
     if data.route_id != route.id:
@@ -466,7 +503,6 @@ def update_route_station(
     )
 
     validate_route_and_station(
-        db,
         current_user,
         route,
         station,
@@ -513,8 +549,12 @@ def update_route_station(
         data.stop_duration_seconds
     )
 
-    db.commit()
-    db.refresh(route_station)
+    try:
+        db.commit()
+        db.refresh(route_station)
+    except Exception:
+        db.rollback()
+        raise
 
     return route_station
 
@@ -529,7 +569,15 @@ def delete_route_station(
     current_user: User = Depends(get_current_user),
 ):
 
-    check_management_role(current_user)
+    check_management_role(
+        current_user,
+    )
+
+    if route_station_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="شناسه ایستگاه مسیر نامعتبر است",
+        )
 
     route_station = (
         db.query(RouteStation)
@@ -550,13 +598,17 @@ def delete_route_station(
         route_station.route_id,
     )
 
-    check_route_access(
-        db,
+    check_university_access(
         current_user,
-        route,
+        route.university_id,
     )
 
     db.delete(route_station)
-    db.commit()
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return None

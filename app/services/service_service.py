@@ -1,5 +1,5 @@
-
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.service import Service
@@ -134,6 +134,7 @@ def validate_service_data(
     name: str,
     code: str,
     service_type: str,
+    is_active: bool = False,
 ) -> tuple[str, str, str]:
 
     name = normalize_text(name)
@@ -181,7 +182,6 @@ def validate_service_data(
         )
 
     if contract_id is not None:
-
         contract = get_contract(
             db,
             contract_id,
@@ -258,6 +258,7 @@ def create_service(
         name=name,
         code=code,
         service_type=service_type,
+        is_active=is_active,
     )
 
     validate_unique_service_code(
@@ -276,9 +277,22 @@ def create_service(
         is_active=is_active,
     )
 
-    db.add(service)
-    db.commit()
-    db.refresh(service)
+    try:
+        db.add(service)
+        db.commit()
+        db.refresh(service)
+
+    except IntegrityError:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="امکان ثبت سرویس وجود ندارد؛ احتمالاً کد سرویس تکراری است",
+        )
+
+    except Exception:
+        db.rollback()
+        raise
 
     return service
 
@@ -379,6 +393,7 @@ def update_service(
         name=name,
         code=code,
         service_type=service_type,
+        is_active=is_active,
     )
 
     validate_unique_service_code(
@@ -395,8 +410,21 @@ def update_service(
     service.service_type = service_type
     service.is_active = is_active
 
-    db.commit()
-    db.refresh(service)
+    try:
+        db.commit()
+        db.refresh(service)
+
+    except IntegrityError:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="امکان ویرایش سرویس وجود ندارد؛ احتمالاً کد سرویس تکراری است",
+        )
+
+    except Exception:
+        db.rollback()
+        raise
 
     return service
 
@@ -413,9 +441,34 @@ def update_service_status(
         service_id,
     )
 
+    if is_active:
+        validate_service_data(
+            db,
+            university_id=service.university_id,
+            route_id=service.route_id,
+            contract_id=service.contract_id,
+            name=service.name,
+            code=service.code,
+            service_type=service.service_type,
+            is_active=True,
+        )
+
     service.is_active = is_active
 
-    db.commit()
-    db.refresh(service)
+    try:
+        db.commit()
+        db.refresh(service)
+
+    except IntegrityError:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="امکان تغییر وضعیت سرویس وجود ندارد",
+        )
+
+    except Exception:
+        db.rollback()
+        raise
 
     return service

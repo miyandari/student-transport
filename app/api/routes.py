@@ -15,7 +15,6 @@ from app.schemas.route import (
 from app.core.dependencies import (
     get_current_user,
     check_university_access,
-    check_company_user,
 )
 
 from app.core.roles import Roles
@@ -47,7 +46,6 @@ def check_management_role(
         Roles.SUPER_ADMIN,
         Roles.UNIVERSITY_ADMIN,
         Roles.TRANSPORT_MANAGER,
-        Roles.COMPANY_ADMIN,
     }
 
     if current_user.role not in allowed_roles:
@@ -64,7 +62,6 @@ def check_view_role(
         Roles.SUPER_ADMIN,
         Roles.UNIVERSITY_ADMIN,
         Roles.TRANSPORT_MANAGER,
-        Roles.COMPANY_ADMIN,
         Roles.DRIVER,
         Roles.STUDENT,
     }
@@ -113,36 +110,6 @@ def get_route_or_404(
         )
 
     return route
-
-
-def check_route_company_access(
-    current_user: User,
-    route: Route,
-):
-    """
-    کنترل دسترسی company_admin به مسیر.
-
-    در معماری فعلی Route مستقیماً به شرکت متصل نیست.
-    بنابراین شرکت می‌تواند مسیرهای دانشگاه قراردادی خود
-    را مشاهده/پیشنهاد کند، اما مالکیت مسیر از طریق
-    Service -> Contract کنترل می‌شود.
-
-    در این مرحله مسیر به‌صورت مستقل به شرکت تعلق داده نمی‌شود.
-    """
-
-    check_company_user(current_user)
-
-    if route.university_id <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="دانشگاه مسیر نامعتبر است",
-        )
-
-    if not route.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="مسیر موردنظر غیرفعال است",
-        )
 
 
 def validate_university(
@@ -257,32 +224,10 @@ def create_route(
         university_id=route_data.university_id,
     )
 
-    # -----------------------------------------------------
-    # Company Admin
-    # -----------------------------------------------------
-
-    if current_user.role == Roles.COMPANY_ADMIN:
-
-        check_company_user(
-            current_user
-        )
-
-        # شرکت می‌تواند مسیر را برای دانشگاه
-        # موردنظر تعریف/پیشنهاد کند.
-        #
-        # اما چون Route در حال حاضر رابطه مستقیم
-        # با Contract ندارد، نمی‌توانیم مالکیت قراردادی
-        # را در این endpoint قطعی کنیم.
-        #
-        # اتصال واقعی شرکت به مسیر از طریق Service
-        # و Contract کنترل خواهد شد.
-
-    else:
-
-        check_university_access(
-            current_user=current_user,
-            university_id=route_data.university_id,
-        )
+    check_university_access(
+        current_user=current_user,
+        university_id=route_data.university_id,
+    )
 
     name, code, description = validate_route_data(
         db=db,
@@ -299,8 +244,13 @@ def create_route(
     )
 
     db.add(route)
-    db.commit()
-    db.refresh(route)
+
+    try:
+        db.commit()
+        db.refresh(route)
+    except Exception:
+        db.rollback()
+        raise
 
     return route
 
@@ -339,30 +289,6 @@ def get_routes(
             )
 
     # -----------------------------------------------------
-    # Company Admin
-    # -----------------------------------------------------
-
-    elif current_user.role == Roles.COMPANY_ADMIN:
-
-        check_company_user(
-            current_user
-        )
-
-        # شرکت فقط مسیرهای فعال را می‌بیند.
-        #
-        # فیلتر قراردادی مسیر در این مرحله از طریق
-        # Service/Contract انجام می‌شود و Route به‌تنهایی
-        # مالک شرکت ندارد.
-        query = query.filter(
-            Route.is_active.is_(True)
-        )
-
-        if university_id is not None:
-            query = query.filter(
-                Route.university_id == university_id
-            )
-
-    # -----------------------------------------------------
     # University Users / Driver / Student
     # -----------------------------------------------------
 
@@ -378,6 +304,13 @@ def get_routes(
             Route.university_id
             == current_user.university_id
         )
+
+        if university_id is not None:
+            if university_id != current_user.university_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="شما به مسیرهای این دانشگاه دسترسی ندارید",
+                )
 
     # -----------------------------------------------------
     # Direction
@@ -398,14 +331,6 @@ def get_routes(
     # -----------------------------------------------------
 
     if is_active is not None:
-
-        # company_admin نباید بتواند مسیر غیرفعال
-        # را مشاهده کند.
-        if (
-            current_user.role == Roles.COMPANY_ADMIN
-            and is_active is False
-        ):
-            return []
 
         query = query.filter(
             Route.is_active == is_active
@@ -443,27 +368,10 @@ def get_route(
         route_id=route_id,
     )
 
-    # -----------------------------------------------------
-    # Company Admin
-    # -----------------------------------------------------
-
-    if current_user.role == Roles.COMPANY_ADMIN:
-
-        check_route_company_access(
-            current_user=current_user,
-            route=route,
-        )
-
-    # -----------------------------------------------------
-    # Other Users
-    # -----------------------------------------------------
-
-    else:
-
-        check_university_access(
-            current_user=current_user,
-            university_id=route.university_id,
-        )
+    check_university_access(
+        current_user=current_user,
+        university_id=route.university_id,
+    )
 
     return route
 
@@ -492,27 +400,10 @@ def update_route(
         route_id=route_id,
     )
 
-    # -----------------------------------------------------
-    # Company Admin
-    # -----------------------------------------------------
-
-    if current_user.role == Roles.COMPANY_ADMIN:
-
-        check_route_company_access(
-            current_user=current_user,
-            route=route,
-        )
-
-    # -----------------------------------------------------
-    # University Management
-    # -----------------------------------------------------
-
-    else:
-
-        check_university_access(
-            current_user=current_user,
-            university_id=route.university_id,
-        )
+    check_university_access(
+        current_user=current_user,
+        university_id=route.university_id,
+    )
 
     if (
         route_data.university_id
@@ -533,23 +424,14 @@ def update_route(
     route.code = code
     route.direction = route_data.direction
     route.description = description
+    route.is_active = route_data.is_active
 
-    # -----------------------------------------------------
-    # Company Admin
-    # -----------------------------------------------------
-    #
-    # شرکت نباید بتواند مسیر فعال دانشگاه را
-    # بدون کنترل دانشگاه غیرفعال کند.
-    #
-    # فعلاً is_active در تغییرات شرکت نادیده گرفته می‌شود.
-    # تأیید نهایی وضعیت مسیر با دانشگاه است.
-    # -----------------------------------------------------
-
-    if current_user.role != Roles.COMPANY_ADMIN:
-        route.is_active = route_data.is_active
-
-    db.commit()
-    db.refresh(route)
+    try:
+        db.commit()
+        db.refresh(route)
+    except Exception:
+        db.rollback()
+        raise
 
     return route
 
@@ -578,21 +460,6 @@ def update_route_status(
         route_id=route_id,
     )
 
-    # -----------------------------------------------------
-    # Company Admin
-    # -----------------------------------------------------
-
-    if current_user.role == Roles.COMPANY_ADMIN:
-
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="تغییر وضعیت فعال/غیرفعال مسیر فقط توسط دانشگاه مجاز است",
-        )
-
-    # -----------------------------------------------------
-    # University Management
-    # -----------------------------------------------------
-
     check_university_access(
         current_user=current_user,
         university_id=route.university_id,
@@ -600,7 +467,11 @@ def update_route_status(
 
     route.is_active = is_active
 
-    db.commit()
-    db.refresh(route)
+    try:
+        db.commit()
+        db.refresh(route)
+    except Exception:
+        db.rollback()
+        raise
 
     return route

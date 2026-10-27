@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 
 from app.models.trip import Trip
+from app.models.trip_assignment import TripAssignment
 from app.models.user import User
 from app.models.service import Service
 from app.models.schedule import Schedule
@@ -40,8 +41,12 @@ from app.services.trip_service import (
     create_trip,
     create_trip_from_schedule,
     generate_daily_trips,
-    assign_trip_resources,
     update_trip_status,
+)
+
+from app.services.trip_assignment_service import (
+    get_active_assignment,
+    replace_active_assignment,
 )
 
 from app.services.eta_service import get_next_station
@@ -536,6 +541,10 @@ def assign_trip_resources_endpoint(
             detail="حداقل راننده یا خودرو باید مشخص شود",
         )
 
+    # -----------------------------------------------------
+    # Access Control
+    # -----------------------------------------------------
+
     if current_user.role == Roles.COMPANY_ADMIN:
 
         check_trip_company_access(
@@ -596,12 +605,78 @@ def assign_trip_resources_endpoint(
             trip=trip,
         )
 
-    return assign_trip_resources(
+    # -----------------------------------------------------
+    # Current Active Assignment
+    # -----------------------------------------------------
+
+    current_assignment = get_active_assignment(
+        db=db,
+        trip_id=trip.id,
+    )
+
+    # اگر فقط یکی از منابع ارسال شده باشد،
+    # منبع دیگر از تخصیص فعال فعلی حفظ می‌شود.
+    #
+    # بنابراین رفتار قبلی API حفظ می‌شود:
+    # ارسال فقط driver_id باعث حذف خودرو نمی‌شود
+    # و ارسال فقط vehicle_id باعث حذف راننده نمی‌شود.
+
+    driver_id = assignment_data.driver_id
+    vehicle_id = assignment_data.vehicle_id
+
+    if current_assignment is not None:
+
+        if driver_id is None:
+            driver_id = current_assignment.driver_id
+
+        if vehicle_id is None:
+            vehicle_id = current_assignment.vehicle_id
+
+    if driver_id is None and vehicle_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="حداقل راننده یا خودرو باید مشخص شود",
+        )
+
+    # -----------------------------------------------------
+    # Create Assignment History
+    # -----------------------------------------------------
+
+    assignment_type = (
+        "substitute"
+        if current_assignment is not None
+        else "primary"
+    )
+
+    assignment = TripAssignment(
+        trip_id=trip.id,
+        driver_id=driver_id,
+        vehicle_id=vehicle_id,
+        assigned_by_user_id=current_user.id,
+        assignment_type=assignment_type,
+        reason="تخصیص راننده یا خودرو از طریق API سفر",
+        start_at=None,
+        end_at=None,
+        is_active=False,
+    )
+
+    db.add(assignment)
+    db.flush()
+
+    # -----------------------------------------------------
+    # Activate New Assignment
+    # -----------------------------------------------------
+
+    replace_active_assignment(
         db=db,
         trip=trip,
-        driver_id=assignment_data.driver_id,
-        vehicle_id=assignment_data.vehicle_id,
+        new_assignment=assignment,
     )
+
+    db.commit()
+    db.refresh(trip)
+
+    return trip
 
 
 # =========================================================
