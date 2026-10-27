@@ -15,19 +15,31 @@ ACTIVE_TRIP_STATUSES = {
     "in_progress",
 }
 
+ALLOWED_GENDER_RESTRICTIONS = {
+    "mixed",
+    "male",
+    "female",
+}
+
 
 def get_trip(
     db: Session,
     trip_id: int,
+    *,
+    for_update: bool = False,
 ) -> Trip:
-    trip = (
+    query = (
         db.query(Trip)
         .filter(
             Trip.id == trip_id,
             Trip.is_active.is_(True),
         )
-        .first()
     )
+
+    if for_update:
+        query = query.with_for_update()
+
+    trip = query.first()
 
     if trip is None:
         raise HTTPException(
@@ -78,6 +90,36 @@ def validate_student_access(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="دانشجو متعلق به دانشگاه این سفر نیست",
+        )
+
+
+def validate_gender_restriction(
+    student: Student,
+    trip: Trip,
+) -> None:
+    if trip.service is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="سرویس مربوط به این سفر معتبر نیست",
+        )
+
+    restriction = (
+        trip.service.gender_restriction or "mixed"
+    ).strip().lower()
+
+    if restriction not in ALLOWED_GENDER_RESTRICTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="محدودیت جنسیتی سرویس نامعتبر است",
+        )
+
+    if restriction == "mixed":
+        return
+
+    if student.gender != restriction:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="این سرویس برای جنسیت دانشجوی انتخاب‌شده مجاز نیست",
         )
 
 
@@ -267,7 +309,13 @@ def create_trip_passenger(
     alighting_station_id: int | None,
 ) -> TripPassenger:
 
-    trip = get_trip(db, trip_id)
+    trip = get_trip(
+        db,
+        trip_id,
+        for_update=True,
+    )
+
+    validate_trip_for_boarding(trip)
 
     student = get_student(
         db,
@@ -277,6 +325,17 @@ def create_trip_passenger(
     validate_student_access(
         student,
         trip,
+    )
+
+    validate_gender_restriction(
+        student,
+        trip,
+    )
+
+    validate_duplicate_boarding(
+        db,
+        trip.id,
+        student.id,
     )
 
     if boarding_station_id is not None:
@@ -294,6 +353,12 @@ def create_trip_passenger(
             alighting_station_id,
             "ایستگاه پیاده‌شدن",
         )
+
+    validate_passenger_capacity(
+        db,
+        trip,
+        is_standing,
+    )
 
     passenger = TripPassenger(
         trip_id=trip.id,
@@ -325,6 +390,7 @@ def board_passenger(
     trip = get_trip(
         db,
         trip_id,
+        for_update=True,
     )
 
     validate_trip_for_boarding(trip)
@@ -335,6 +401,11 @@ def board_passenger(
     )
 
     validate_student_access(
+        student,
+        trip,
+    )
+
+    validate_gender_restriction(
         student,
         trip,
     )

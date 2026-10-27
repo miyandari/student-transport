@@ -104,10 +104,6 @@ def get_student_or_404(
     return student
 
 
-# =========================================================
-# ایجاد دانشجو
-# =========================================================
-
 @router.post(
     "/",
     response_model=StudentResponse,
@@ -146,6 +142,10 @@ def create_student(
         student_data.last_name
     )
 
+    gender = normalize_text(
+        student_data.gender
+    )
+
     national_id = normalize_text(
         student_data.national_id
     )
@@ -164,6 +164,12 @@ def create_student(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="نام و نام خانوادگی نمی‌توانند خالی باشند"
+        )
+
+    if gender not in {"male", "female"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="جنسیت دانشجو نامعتبر است"
         )
 
     existing_student = (
@@ -201,29 +207,30 @@ def create_student(
         student_number=student_number,
         first_name=first_name,
         last_name=last_name,
+        gender=gender,
         national_id=national_id,
         phone=phone,
         is_active=student_data.is_active,
     )
 
-    db.add(student)
-    db.flush()
+    try:
+        db.add(student)
+        db.flush()
 
-    # ایجاد QR از همان لحظه ایجاد دانشجو
-    ensure_student_qr_token(
-        db,
-        student,
-    )
+        ensure_student_qr_token(
+            db,
+            student,
+        )
 
-    db.commit()
-    db.refresh(student)
+        db.commit()
+        db.refresh(student)
+
+    except Exception:
+        db.rollback()
+        raise
 
     return student
 
-
-# =========================================================
-# فهرست دانشجویان
-# =========================================================
 
 @router.get(
     "/",
@@ -233,6 +240,7 @@ def get_students(
     university_id: int | None = None,
     student_number: str | None = None,
     is_active: bool | None = None,
+    gender: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -257,13 +265,11 @@ def get_students(
         )
 
     elif university_id is not None:
-
         query = query.filter(
             Student.university_id == university_id
         )
 
     if student_number is not None:
-
         normalized_student_number = normalize_text(
             student_number
         )
@@ -274,8 +280,20 @@ def get_students(
                 == normalized_student_number
             )
 
-    if is_active is not None:
+    if gender is not None:
+        normalized_gender = normalize_text(gender)
 
+        if normalized_gender not in {"male", "female"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="جنسیت نامعتبر است"
+            )
+
+        query = query.filter(
+            Student.gender == normalized_gender
+        )
+
+    if is_active is not None:
         query = query.filter(
             Student.is_active == is_active
         )
@@ -286,10 +304,6 @@ def get_students(
         .all()
     )
 
-
-# =========================================================
-# مشاهده یک دانشجو
-# =========================================================
 
 @router.get(
     "/{student_id}",
@@ -319,10 +333,6 @@ def get_student(
     return student
 
 
-# =========================================================
-# QR دانشجو - دریافت
-# =========================================================
-
 @router.get(
     "/{student_id}/qr"
 )
@@ -336,15 +346,12 @@ def get_student_qr(
         student_id,
     )
 
-    # مدیران فقط به دانشگاه خودشان دسترسی دارند
     if current_user.role in MANAGEMENT_ROLES:
-
         check_university_access(
             current_user,
             student.university_id
         )
 
-    # دانشجو فقط QR خودش را می‌تواند بگیرد
     elif current_user.role == Roles.STUDENT:
 
         if current_user.student_id != student.id:
@@ -375,10 +382,6 @@ def get_student_qr(
         "qr_token": student.qr_token,
     }
 
-
-# =========================================================
-# QR دانشجوی لاگین‌شده
-# =========================================================
 
 @router.get(
     "/me/qr"
@@ -421,10 +424,6 @@ def get_my_qr(
     }
 
 
-# =========================================================
-# QR دانشجو - تولید مجدد
-# =========================================================
-
 @router.post(
     "/{student_id}/qr/regenerate"
 )
@@ -466,10 +465,6 @@ def regenerate_student_qr(
     }
 
 
-# =========================================================
-# تغییر وضعیت دانشجو
-# =========================================================
-
 @router.patch(
     "/{student_id}/status",
     response_model=StudentResponse
@@ -498,15 +493,15 @@ def update_student_status(
 
     student.is_active = is_active
 
-    db.commit()
-    db.refresh(student)
+    try:
+        db.commit()
+        db.refresh(student)
+    except Exception:
+        db.rollback()
+        raise
 
     return student
 
-
-# =========================================================
-# ویرایش دانشجو
-# =========================================================
 
 @router.patch(
     "/{student_id}",
@@ -557,6 +552,10 @@ def update_student(
         student_data.last_name
     )
 
+    gender = normalize_text(
+        student_data.gender
+    )
+
     national_id = normalize_text(
         student_data.national_id
     )
@@ -577,6 +576,12 @@ def update_student(
             detail="نام و نام خانوادگی نمی‌توانند خالی باشند"
         )
 
+    if gender not in {"male", "female"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="جنسیت دانشجو نامعتبر است"
+        )
+
     existing_student = (
         db.query(Student)
         .filter(
@@ -594,7 +599,6 @@ def update_student(
         )
 
     if national_id:
-
         existing_national_id = (
             db.query(Student)
             .filter(
@@ -613,11 +617,16 @@ def update_student(
     student.student_number = student_number
     student.first_name = first_name
     student.last_name = last_name
+    student.gender = gender
     student.national_id = national_id
     student.phone = phone
     student.is_active = student_data.is_active
 
-    db.commit()
-    db.refresh(student)
+    try:
+        db.commit()
+        db.refresh(student)
+    except Exception:
+        db.rollback()
+        raise
 
     return student

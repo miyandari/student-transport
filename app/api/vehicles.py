@@ -151,8 +151,7 @@ def check_vehicle_access(
     کنترل دسترسی به خودرو:
 
     - super_admin: دسترسی کامل
-    - company_admin: فقط خودروهای شرکت خودش که
-      از طریق قرارداد فعال به شرکت اختصاص یافته‌اند
+    - company_admin: فقط خودروهای شرکت خودش
     - سایر مدیران: فقط خودروهای دانشگاه خودشان
     """
 
@@ -234,14 +233,20 @@ def create_vehicle(
             detail="این پلاک قبلاً ثبت شده است",
         )
 
-    validate_driver(
+    driver = validate_driver(
         db,
         vehicle_data.driver_id,
         vehicle_data.university_id,
     )
 
+    transport_company_id = None
+
+    if driver is not None:
+        transport_company_id = driver.transport_company_id
+
     vehicle = Vehicle(
         university_id=vehicle_data.university_id,
+        transport_company_id=transport_company_id,
         driver_id=vehicle_data.driver_id,
         plate_number=plate_number,
         vehicle_type=vehicle_type,
@@ -278,10 +283,6 @@ def get_vehicles(
         )
 
     query = db.query(Vehicle)
-
-    # -----------------------------------------------------
-    # شرکت حمل‌ونقل
-    # -----------------------------------------------------
 
     if current_user.role == Roles.COMPANY_ADMIN:
 
@@ -333,10 +334,6 @@ def get_vehicles(
             .order_by(Vehicle.id.desc())
             .all()
         )
-
-    # -----------------------------------------------------
-    # مدیریت دانشگاه
-    # -----------------------------------------------------
 
     if current_user.role != Roles.SUPER_ADMIN:
 
@@ -437,10 +434,6 @@ def update_vehicle(
         vehicle,
     )
 
-    # -----------------------------------------------------
-    # شرکت حمل‌ونقل
-    # -----------------------------------------------------
-
     if current_user.role == Roles.COMPANY_ADMIN:
 
         if vehicle_data.university_id != vehicle.university_id:
@@ -455,16 +448,12 @@ def update_vehicle(
                 detail="شرکت حمل‌ونقل مجاز به تغییر وضعیت خودرو نیست",
             )
 
-        validate_driver(
+        driver = validate_driver(
             db,
             vehicle_data.driver_id,
             vehicle.university_id,
             current_user.transport_company_id,
         )
-
-    # -----------------------------------------------------
-    # مدیریت دانشگاه
-    # -----------------------------------------------------
 
     else:
 
@@ -479,7 +468,7 @@ def update_vehicle(
             vehicle.university_id,
         )
 
-        validate_driver(
+        driver = validate_driver(
             db,
             vehicle_data.driver_id,
             vehicle.university_id,
@@ -521,6 +510,12 @@ def update_vehicle(
         )
 
     vehicle.driver_id = vehicle_data.driver_id
+
+    if driver is not None:
+        vehicle.transport_company_id = driver.transport_company_id
+    else:
+        vehicle.transport_company_id = None
+
     vehicle.plate_number = plate_number
     vehicle.vehicle_type = vehicle_type
     vehicle.capacity = vehicle_data.capacity

@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.reservation import Reservation
@@ -34,17 +35,23 @@ def validate_positive_id(
 def get_trip(
     db: Session,
     trip_id: int,
+    *,
+    for_update: bool = False,
 ) -> Trip:
     validate_positive_id(
         trip_id,
         "شناسه سفر",
     )
 
-    trip = (
+    query = (
         db.query(Trip)
         .filter(Trip.id == trip_id)
-        .first()
     )
+
+    if for_update:
+        query = query.with_for_update()
+
+    trip = query.first()
 
     if not trip:
         raise HTTPException(
@@ -115,6 +122,41 @@ def validate_student_for_trip(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="دانشجو و سفر متعلق به یک دانشگاه نیستند",
+        )
+
+
+def validate_student_gender_for_trip(
+    student: Student,
+    trip: Trip,
+) -> None:
+    service = trip.service
+
+    if service is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="سرویس این سفر مشخص نشده است",
+        )
+
+    gender_restriction = (
+        service.gender_restriction or "mixed"
+    ).strip().lower()
+
+    if gender_restriction == "mixed":
+        return
+
+    if gender_restriction not in {
+        "male",
+        "female",
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="محدودیت جنسیتی سرویس نامعتبر است",
+        )
+
+    if student.gender != gender_restriction:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="این سرویس برای جنسیت دانشجوی انتخاب‌شده مجاز نیست",
         )
 
 
@@ -250,9 +292,13 @@ def create_reservation(
     student_id: int,
     is_standing: bool,
 ) -> Reservation:
+
+    # Lock the trip row before checking capacity.
+    # This prevents concurrent reservations from exceeding capacity.
     trip = get_trip(
         db,
         trip_id,
+        for_update=True,
     )
 
     validate_trip_for_reservation(
@@ -265,6 +311,11 @@ def create_reservation(
     )
 
     validate_student_for_trip(
+        student,
+        trip,
+    )
+
+    validate_student_gender_for_trip(
         student,
         trip,
     )
@@ -311,6 +362,27 @@ def create_reservation(
         db.add(reservation)
         db.commit()
         db.refresh(reservation)
+
+    except IntegrityError:
+        db.rollback()
+
+        existing_reservation = get_active_reservation(
+            db,
+            trip.id,
+            student.id,
+        )
+
+        if existing_reservation:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="این دانشجو قبلاً برای این سفر رزرو فعال دارد",
+            )
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="امکان ثبت رزرو وجود ندارد",
+        )
+
     except Exception:
         db.rollback()
         raise
@@ -323,6 +395,7 @@ def cancel_reservation(
     *,
     reservation_id: int,
 ) -> Reservation:
+
     validate_positive_id(
         reservation_id,
         "شناسه رزرو",
@@ -371,6 +444,7 @@ def cancel_reservation(
     try:
         db.commit()
         db.refresh(reservation)
+
     except Exception:
         db.rollback()
         raise

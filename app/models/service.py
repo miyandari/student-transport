@@ -59,16 +59,19 @@ class Service(Base):
         nullable=False,
     )
 
+    gender_restriction = Column(
+        String(20),
+        nullable=False,
+        default="mixed",
+        index=True,
+    )
+
     is_active = Column(
         Boolean,
         default=True,
         nullable=False,
         index=True,
     )
-
-    # =====================================================
-    # Relationships
-    # =====================================================
 
     university = relationship(
         "University",
@@ -93,10 +96,6 @@ class Service(Base):
         back_populates="service",
         foreign_keys="Trip.service_id",
     )
-
-    # =====================================================
-    # Database Constraints / Indexes
-    # =====================================================
 
     __table_args__ = (
         CheckConstraint(
@@ -129,6 +128,11 @@ class Service(Base):
             name="ck_services_type_not_empty",
         ),
 
+        CheckConstraint(
+            "gender_restriction IN ('mixed', 'male', 'female')",
+            name="ck_services_gender_restriction_valid",
+        ),
+
         Index(
             "ix_services_university_active",
             "university_id",
@@ -151,5 +155,11 @@ class Service(Base):
             "ix_services_university_code",
             "university_id",
             "code",
+        ),
+
+        Index(
+            "ix_services_university_gender_restriction",
+            "university_id",
+            "gender_restriction",
         ),
     )

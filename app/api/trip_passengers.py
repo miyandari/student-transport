@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+
 from app.models.trip_passenger import TripPassenger
 from app.models.trip import Trip
 from app.models.user import User
@@ -45,10 +46,27 @@ router = APIRouter(
 # Helpers
 # =========================================================
 
+def validate_positive_id(
+    value: int,
+    field_name: str,
+) -> None:
+
+    if value <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{field_name} باید بزرگ‌تر از صفر باشد",
+        )
+
+
 def get_passenger_or_404(
     db: Session,
     passenger_id: int,
 ) -> TripPassenger:
+
+    validate_positive_id(
+        passenger_id,
+        "شناسه مسافر",
+    )
 
     passenger = (
         db.query(TripPassenger)
@@ -72,6 +90,11 @@ def get_trip_or_404(
     trip_id: int,
 ) -> Trip:
 
+    validate_positive_id(
+        trip_id,
+        "شناسه سفر",
+    )
+
     trip = (
         db.query(Trip)
         .filter(
@@ -93,6 +116,11 @@ def get_student_or_404(
     db: Session,
     student_id: int,
 ) -> Student:
+
+    validate_positive_id(
+        student_id,
+        "شناسه دانشجو",
+    )
 
     student = (
         db.query(Student)
@@ -187,6 +215,23 @@ def check_student_trip_consistency(
         )
 
 
+def check_passenger_management_access(
+    current_user: User,
+) -> None:
+
+    if (
+        current_user.role not in TRIP_MANAGEMENT_ROLES
+        and current_user.role not in {
+            Roles.COMPANY_ADMIN,
+            Roles.DRIVER,
+        }
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="شما مجوز مدیریت مسافران سفر را ندارید",
+        )
+
+
 # =========================================================
 # Create Passenger
 # Management / Company / Driver
@@ -203,14 +248,9 @@ def create_trip_passenger_endpoint(
     current_user: User = Depends(get_current_user),
 ):
 
-    if (
-        current_user.role not in TRIP_MANAGEMENT_ROLES
-        and current_user.role != Roles.DRIVER
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="شما مجوز ثبت مسافر را ندارید",
-        )
+    check_passenger_management_access(
+        current_user,
+    )
 
     trip = get_trip_or_404(
         db,
@@ -267,14 +307,9 @@ def board_passenger_endpoint(
     current_user: User = Depends(get_current_user),
 ):
 
-    if (
-        current_user.role not in TRIP_MANAGEMENT_ROLES
-        and current_user.role != Roles.DRIVER
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="شما مجوز ثبت سوارشدن مسافر را ندارید",
-        )
+    check_passenger_management_access(
+        current_user,
+    )
 
     trip = get_trip_or_404(
         db,
@@ -331,14 +366,9 @@ def board_passenger_by_qr(
     current_user: User = Depends(get_current_user),
 ):
 
-    if (
-        current_user.role not in TRIP_MANAGEMENT_ROLES
-        and current_user.role != Roles.DRIVER
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="شما مجوز ثبت سوارشدن مسافر با QR را ندارید",
-        )
+    check_passenger_management_access(
+        current_user,
+    )
 
     trip = get_trip_or_404(
         db,
@@ -415,6 +445,18 @@ def get_trip_passengers(
             detail="شما مجوز مشاهده مسافران سفر را ندارید",
         )
 
+    if trip_id is not None:
+        validate_positive_id(
+            trip_id,
+            "شناسه سفر",
+        )
+
+    if student_id is not None:
+        validate_positive_id(
+            student_id,
+            "شناسه دانشجو",
+        )
+
     # -----------------------------------------------------
     # Student restriction
     # -----------------------------------------------------
@@ -442,6 +484,8 @@ def get_trip_passengers(
     # Specific trip access
     # -----------------------------------------------------
 
+    trip = None
+
     if trip_id is not None:
 
         trip = get_trip_or_404(
@@ -466,8 +510,6 @@ def get_trip_passengers(
 
     if current_user.role == Roles.COMPANY_ADMIN:
 
-        # شرکت برای مشاهده فهرست مسافران باید
-        # حتماً سفر مشخص کند تا دسترسی قرارداد بررسی شود.
         if trip_id is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -521,7 +563,7 @@ def get_trip_passengers(
 
         if current_user.role == Roles.COMPANY_ADMIN:
 
-            if trip_id is None:
+            if trip is None:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="برای جست‌وجوی دانشجو توسط شرکت، تعیین سفر الزامی است",
@@ -656,13 +698,14 @@ def alight_trip_passenger_endpoint(
     current_user: User = Depends(get_current_user),
 ):
 
-    if (
-        current_user.role not in TRIP_MANAGEMENT_ROLES
-        and current_user.role != Roles.DRIVER
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="شما مجوز ثبت پیاده‌شدن مسافر را ندارید",
+    check_passenger_management_access(
+        current_user,
+    )
+
+    if alighting_station_id is not None:
+        validate_positive_id(
+            alighting_station_id,
+            "شناسه ایستگاه پیاده‌شدن",
         )
 
     passenger = get_passenger_or_404(

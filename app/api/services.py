@@ -87,9 +87,7 @@ def get_active_route(
 
     route = (
         db.query(Route)
-        .filter(
-            Route.id == route_id,
-        )
+        .filter(Route.id == route_id)
         .first()
     )
 
@@ -127,9 +125,7 @@ def get_active_contract(
 
     contract = (
         db.query(Contract)
-        .filter(
-            Contract.id == contract_id,
-        )
+        .filter(Contract.id == contract_id)
         .first()
     )
 
@@ -289,6 +285,7 @@ def create_service_endpoint(
         name=data.name,
         code=data.code,
         service_type=data.service_type,
+        gender_restriction=data.gender_restriction,
         is_active=data.is_active,
     )
 
@@ -302,6 +299,7 @@ def get_services_endpoint(
     route_id: int | None = None,
     contract_id: int | None = None,
     service_type: str | None = None,
+    gender_restriction: str | None = None,
     is_active: bool | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -355,6 +353,12 @@ def get_services_endpoint(
                 Service.service_type == service_type,
             )
 
+        if gender_restriction is not None:
+            query = query.filter(
+                Service.gender_restriction
+                == gender_restriction.strip().lower(),
+            )
+
         if is_active is not None:
             query = query.filter(
                 Service.is_active == is_active,
@@ -381,6 +385,7 @@ def get_services_endpoint(
         route_id=route_id,
         contract_id=contract_id,
         service_type=service_type,
+        gender_restriction=gender_restriction,
         is_active=is_active,
     )
 
@@ -447,7 +452,7 @@ def update_service_endpoint(
     )
 
     if current_user.role == Roles.COMPANY_ADMIN:
-        contract = check_company_service_access(
+        check_company_service_access(
             db=db,
             current_user=current_user,
             service=service,
@@ -519,6 +524,7 @@ def update_service_endpoint(
         name=data.name,
         code=data.code,
         service_type=data.service_type,
+        gender_restriction=data.gender_restriction,
         is_active=data.is_active,
     )
 

@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI
 
 from app.api.router import router
@@ -10,6 +9,7 @@ from app.api.drivers import router as drivers_router
 from app.api.vehicles import router as vehicles_router
 from app.api.contracts import router as contracts_router
 from app.api.stations import router as stations_router
+from app.api.routes import router as routes_router
 from app.api.route_stations import router as route_stations_router
 from app.api.services import router as services_router
 from app.api.schedules import router as schedules_router
@@ -66,6 +66,7 @@ app.include_router(contracts_router)
 # =========================================================
 
 app.include_router(stations_router)
+app.include_router(routes_router)
 app.include_router(route_stations_router)
 
 

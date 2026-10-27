@@ -45,6 +45,12 @@ class Student(Base):
         nullable=False,
     )
 
+    gender = Column(
+        String(20),
+        nullable=False,
+        index=True,
+    )
+
     national_id = Column(
         String(20),
         nullable=True,
@@ -90,6 +96,10 @@ class Student(Base):
             name="ck_students_last_name_not_empty",
         ),
         CheckConstraint(
+            "gender IN ('male', 'female')",
+            name="ck_students_gender_valid",
+        ),
+        CheckConstraint(
             "national_id IS NULL OR length(trim(national_id)) > 0",
             name="ck_students_national_id_not_empty",
         ),
@@ -110,6 +120,11 @@ class Student(Base):
             "ix_students_university_student_number",
             "university_id",
             "student_number",
+        ),
+        Index(
+            "ix_students_university_gender",
+            "university_id",
+            "gender",
         ),
         Index(
             "ix_students_university_national_id",

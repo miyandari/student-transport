@@ -8,6 +8,13 @@ from app.models.contract import Contract
 from app.models.university import University
 
 
+ALLOWED_GENDER_RESTRICTIONS = {
+    "mixed",
+    "male",
+    "female",
+}
+
+
 def get_service(
     db: Session,
     service_id: int,
@@ -125,6 +132,25 @@ def normalize_text(
     return value if value else None
 
 
+def validate_gender_restriction(
+    value: str | None,
+) -> str:
+    value = normalize_text(value)
+
+    if value is None:
+        value = "mixed"
+
+    value = value.lower()
+
+    if value not in ALLOWED_GENDER_RESTRICTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="محدودیت جنسیتی سرویس نامعتبر است",
+        )
+
+    return value
+
+
 def validate_service_data(
     db: Session,
     *,
@@ -134,12 +160,17 @@ def validate_service_data(
     name: str,
     code: str,
     service_type: str,
+    gender_restriction: str = "mixed",
     is_active: bool = False,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str]:
 
     name = normalize_text(name)
     code = normalize_text(code)
     service_type = normalize_text(service_type)
+
+    gender_restriction = validate_gender_restriction(
+        gender_restriction
+    )
 
     if not name:
         raise HTTPException(
@@ -199,7 +230,12 @@ def validate_service_data(
                 detail="قرارداد انتخاب‌شده غیرفعال است",
             )
 
-    return name, code, service_type
+    return (
+        name,
+        code,
+        service_type,
+        gender_restriction,
+    )
 
 
 def validate_unique_service_code(
@@ -247,10 +283,16 @@ def create_service(
     name: str,
     code: str,
     service_type: str,
-    is_active: bool,
+    gender_restriction: str = "mixed",
+    is_active: bool = False,
 ) -> Service:
 
-    name, code, service_type = validate_service_data(
+    (
+        name,
+        code,
+        service_type,
+        gender_restriction,
+    ) = validate_service_data(
         db,
         university_id=university_id,
         route_id=route_id,
@@ -258,6 +300,7 @@ def create_service(
         name=name,
         code=code,
         service_type=service_type,
+        gender_restriction=gender_restriction,
         is_active=is_active,
     )
 
@@ -274,6 +317,7 @@ def create_service(
         name=name,
         code=code,
         service_type=service_type,
+        gender_restriction=gender_restriction,
         is_active=is_active,
     )
 
@@ -304,6 +348,7 @@ def get_services(
     route_id: int | None = None,
     contract_id: int | None = None,
     service_type: str | None = None,
+    gender_restriction: str | None = None,
     is_active: bool | None = None,
 ) -> list[Service]:
 
@@ -349,6 +394,15 @@ def get_services(
             Service.service_type == service_type
         )
 
+    if gender_restriction is not None:
+        gender_restriction = validate_gender_restriction(
+            gender_restriction
+        )
+
+        query = query.filter(
+            Service.gender_restriction == gender_restriction
+        )
+
     if is_active is not None:
         query = query.filter(
             Service.is_active == is_active
@@ -371,7 +425,8 @@ def update_service(
     name: str,
     code: str,
     service_type: str,
-    is_active: bool,
+    gender_restriction: str = "mixed",
+    is_active: bool = False,
 ) -> Service:
 
     service = get_service(
@@ -385,7 +440,12 @@ def update_service(
             detail="امکان تغییر دانشگاه سرویس وجود ندارد",
         )
 
-    name, code, service_type = validate_service_data(
+    (
+        name,
+        code,
+        service_type,
+        gender_restriction,
+    ) = validate_service_data(
         db,
         university_id=university_id,
         route_id=route_id,
@@ -393,6 +453,7 @@ def update_service(
         name=name,
         code=code,
         service_type=service_type,
+        gender_restriction=gender_restriction,
         is_active=is_active,
     )
 
@@ -408,6 +469,7 @@ def update_service(
     service.name = name
     service.code = code
     service.service_type = service_type
+    service.gender_restriction = gender_restriction
     service.is_active = is_active
 
     try:
@@ -450,6 +512,7 @@ def update_service_status(
             name=service.name,
             code=service.code,
             service_type=service.service_type,
+            gender_restriction=service.gender_restriction,
             is_active=True,
         )
 

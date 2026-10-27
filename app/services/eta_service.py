@@ -426,31 +426,29 @@ def calculate_route_progress(
             <= STATION_PROXIMITY_METERS
         ):
             return {
-                "previous_station":
-                    _station_summary(
-                        only_station
-                    ),
+                "previous_station": _station_summary(
+                    only_station
+                ),
                 "next_station": None,
                 "route_progress_percent": 100,
-                "route_progress_status":
-                    "at_final_station",
+                "route_progress_status": "at_final_station",
             }
 
         return {
             "previous_station": None,
-            "next_station":
-                _station_summary(
-                    only_station
-                ),
+            "next_station": _station_summary(
+                only_station
+            ),
             "route_progress_percent": 0,
-            "route_progress_status":
-                "before_first_station",
+            "route_progress_status": "before_first_station",
         }
 
-    nearest = min(
-        station_data,
-        key=lambda item: item["distance"],
+    nearest_index = min(
+        range(len(station_data)),
+        key=lambda index: station_data[index]["distance"],
     )
+
+    nearest = station_data[nearest_index]
 
     # ---------------------------------
     # خودرو دقیقاً نزدیک یک ایستگاه است
@@ -460,240 +458,148 @@ def calculate_route_progress(
         nearest["distance"]
         <= STATION_PROXIMITY_METERS
     ):
-        current_index = next(
-            (
-                index
-                for index, item
-                in enumerate(station_data)
-                if item["route_station"].id
-                == nearest["route_station"].id
-            ),
-            0,
-        )
-
-        if current_index + 1 < len(
-            station_data
-        ):
-            next_item = station_data[
-                current_index + 1
+        if nearest_index + 1 < len(station_data):
+            next_station = station_data[
+                nearest_index + 1
             ]
 
+            progress_percent = (
+                nearest_index
+                / max(
+                    1,
+                    len(station_data) - 1,
+                )
+            ) * 100
+
             return {
-                "previous_station":
-                    _station_summary(
-                        nearest
-                    ),
-                "next_station":
-                    _station_summary(
-                        next_item
-                    ),
-                "route_progress_percent":
-                    round(
-                        (
-                            current_index
-                            / max(
-                                1,
-                                len(station_data)
-                                - 1,
-                            )
-                        )
-                        * 100,
-                        1,
-                    ),
-                "route_progress_status":
-                    "at_station",
+                "previous_station": _station_summary(
+                    nearest
+                ),
+                "next_station": _station_summary(
+                    next_station
+                ),
+                "route_progress_percent": round(
+                    progress_percent,
+                    1,
+                ),
+                "route_progress_status": "at_station",
             }
 
         return {
-            "previous_station":
-                _station_summary(
-                    nearest
-                ),
+            "previous_station": _station_summary(
+                nearest
+            ),
             "next_station": None,
             "route_progress_percent": 100,
-            "route_progress_status":
-                "at_final_station",
+            "route_progress_status": "at_final_station",
         }
 
     # ---------------------------------
-    # تشخیص بازه فعلی مسیر
+    # قبل از اولین ایستگاه
     # ---------------------------------
 
-    previous_station = None
-    next_station = None
+    first_station = station_data[0]
 
-    for index in range(
-        len(station_data) - 1
-    ):
-        current_item = station_data[index]
-        next_item = station_data[index + 1]
+    if nearest_index == 0:
+        second_station = station_data[1]
 
-        current_order = (
-            current_item[
-                "route_station"
-            ].stop_order
-        )
-
-        next_order = (
-            next_item[
-                "route_station"
-            ].stop_order
-        )
-
-        if next_order <= current_order:
-            continue
-
-        # از دو ایستگاه مجاور، نزدیک‌ترین
-        # ایستگاه را مبنای تخمین قرار می‌دهیم.
         if (
-            current_item["distance"]
-            <= next_item["distance"]
+            first_station["distance"]
+            < second_station["distance"]
         ):
-            previous_station = current_item
-            next_station = next_item
-        else:
-            previous_station = current_item
-            next_station = next_item
-
-        break
+            return {
+                "previous_station": None,
+                "next_station": _station_summary(
+                    first_station
+                ),
+                "route_progress_percent": 0,
+                "route_progress_status": "before_first_station",
+            }
 
     # ---------------------------------
-    # fallback
+    # بعد از آخرین ایستگاه
     # ---------------------------------
 
-    if next_station is None:
-        next_candidates = [
-            item
-            for item in station_data
-            if item[
-                "route_station"
-            ].stop_order
-            > nearest[
-                "route_station"
-            ].stop_order
-        ]
+    last_index = len(station_data) - 1
 
-        if next_candidates:
-            next_station = min(
-                next_candidates,
-                key=lambda item:
-                    item[
-                        "route_station"
-                    ].stop_order,
-            )
+    if nearest_index == last_index:
+        last_station = station_data[last_index]
 
-            previous_candidates = [
-                item
-                for item in station_data
-                if item[
-                    "route_station"
-                ].stop_order
-                < next_station[
-                    "route_station"
-                ].stop_order
-            ]
-
-            if previous_candidates:
-                previous_station = max(
-                    previous_candidates,
-                    key=lambda item:
-                        item[
-                            "route_station"
-                        ].stop_order,
-                )
-
-    if (
-        previous_station is None
-        and next_station is None
-    ):
         return {
-            "previous_station": None,
+            "previous_station": _station_summary(
+                last_station
+            ),
             "next_station": None,
-            "route_progress_percent": 0,
-            "route_progress_status":
-                "progress_unknown",
+            "route_progress_percent": 100,
+            "route_progress_status": "after_last_station",
         }
 
     # ---------------------------------
-    # درصد پیشرفت مسیر
+    # خودرو بین دو ایستگاه
     # ---------------------------------
 
-    first_order = (
-        station_data[0][
-            "route_station"
-        ].stop_order
-    )
+    previous_station = station_data[
+        nearest_index
+    ]
 
-    last_order = (
-        station_data[-1][
-            "route_station"
-        ].stop_order
-    )
+    next_station = station_data[
+        nearest_index + 1
+    ]
+
+    first_order = station_data[0][
+        "route_station"
+    ].stop_order
+
+    last_order = station_data[-1][
+        "route_station"
+    ].stop_order
+
+    previous_order = previous_station[
+        "route_station"
+    ].stop_order
+
+    next_order = next_station[
+        "route_station"
+    ].stop_order
 
     order_range = max(
         1,
         last_order - first_order,
     )
 
-    if previous_station is None:
-        progress_percent = 0
+    segment_order_range = max(
+        1,
+        next_order - previous_order,
+    )
 
-    elif next_station is None:
-        progress_percent = 100
+    segment_distance = calculate_distance_meters(
+        previous_station["station"].latitude,
+        previous_station["station"].longitude,
+        next_station["station"].latitude,
+        next_station["station"].longitude,
+    )
 
-    else:
-        previous_order = (
-            previous_station[
-                "route_station"
-            ].stop_order
-        )
+    previous_distance = previous_station[
+        "distance"
+    ]
 
-        next_order = (
-            next_station[
-                "route_station"
-            ].stop_order
-        )
+    next_distance = next_station[
+        "distance"
+    ]
 
-        segment_distance = (
-            calculate_distance_meters(
-                previous_station[
-                    "station"
-                ].latitude,
-                previous_station[
-                    "station"
-                ].longitude,
-                next_station[
-                    "station"
-                ].latitude,
-                next_station[
-                    "station"
-                ].longitude,
-            )
-        )
+    distance_sum = (
+        previous_distance
+        + next_distance
+    )
 
-        previous_distance = (
-            previous_station["distance"]
-        )
-
-        next_distance = (
-            next_station["distance"]
-        )
-
-        distance_sum = (
+    if (
+        segment_distance > 0
+        and distance_sum > 0
+    ):
+        segment_progress = (
             previous_distance
-            + next_distance
+            / distance_sum
         )
-
-        if (
-            segment_distance > 0
-            and distance_sum > 0
-        ):
-            segment_progress = (
-                previous_distance
-                / distance_sum
-            )
-        else:
-            segment_progress = 0
 
         segment_progress = max(
             0,
@@ -703,47 +609,40 @@ def calculate_route_progress(
             ),
         )
 
-        base_progress = (
-            previous_order
-            - first_order
-        ) / order_range
+    else:
+        segment_progress = 0
 
-        segment_count = max(
-            1,
-            next_order - previous_order,
+    base_progress = (
+        previous_order - first_order
+    ) / order_range
+
+    progress_percent = (
+        base_progress
+        + (
+            segment_progress
+            * segment_order_range
+            / order_range
         )
-
-        progress_percent = (
-            base_progress
-            + (
-                segment_progress
-                * segment_count
-                / order_range
-            )
-        ) * 100
+    ) * 100
 
     return {
-        "previous_station":
-            _station_summary(
-                previous_station
-            ),
-        "next_station":
-            _station_summary(
-                next_station
-            ),
-        "route_progress_percent":
-            round(
-                max(
-                    0,
-                    min(
-                        100,
-                        progress_percent,
-                    ),
+        "previous_station": _station_summary(
+            previous_station
+        ),
+        "next_station": _station_summary(
+            next_station
+        ),
+        "route_progress_percent": round(
+            max(
+                0,
+                min(
+                    100,
+                    progress_percent,
                 ),
-                1,
             ),
-        "route_progress_status":
-            "between_stations",
+            1,
+        ),
+        "route_progress_status": "between_stations",
     }
 
 
@@ -836,26 +735,23 @@ def _calculate_upcoming_station_eta(
             {
                 "station_id": station.id,
                 "station_name": station.name,
-                "stop_order":
-                    route_station.stop_order,
+                "stop_order": route_station.stop_order,
                 "latitude": station.latitude,
                 "longitude": station.longitude,
-                "distance_from_vehicle_meters":
-                    round(
-                        distance_from_vehicle,
-                        2,
-                    ),
+                "distance_from_vehicle_meters": round(
+                    distance_from_vehicle,
+                    2,
+                ),
                 "estimated_minutes_from_start":
                     route_station
                     .estimated_minutes_from_start,
                 "stop_duration_seconds":
                     route_station
                     .stop_duration_seconds,
-                "station_bearing":
-                    round(
-                        station_bearing,
-                        2,
-                    ),
+                "station_bearing": round(
+                    station_bearing,
+                    2,
+                ),
                 "heading_difference": None,
                 "eta_seconds": station_eta,
             }

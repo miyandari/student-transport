@@ -35,10 +35,6 @@ router = APIRouter(
 )
 
 
-# =========================================================
-# Roles
-# =========================================================
-
 CREATE_ROLES = MANAGEMENT_ROLES | {
     Roles.STUDENT,
     Roles.COMPANY_ADMIN,
@@ -49,20 +45,13 @@ VIEW_ROLES = CREATE_ROLES | {
 }
 
 
-# =========================================================
-# Helpers
-# =========================================================
-
 def get_trip_or_404(
     db: Session,
     trip_id: int,
 ) -> Trip:
-
     trip = (
         db.query(Trip)
-        .filter(
-            Trip.id == trip_id
-        )
+        .filter(Trip.id == trip_id)
         .first()
     )
 
@@ -79,12 +68,9 @@ def get_student_or_404(
     db: Session,
     student_id: int,
 ) -> Student:
-
     student = (
         db.query(Student)
-        .filter(
-            Student.id == student_id
-        )
+        .filter(Student.id == student_id)
         .first()
     )
 
@@ -102,15 +88,12 @@ def check_trip_access(
     current_user: User,
     trip: Trip,
 ) -> None:
-
     if current_user.role == Roles.COMPANY_ADMIN:
-
         check_trip_company_access(
             db,
             current_user,
             trip,
         )
-
         return
 
     check_university_access(
@@ -123,7 +106,6 @@ def check_driver_trip_access(
     current_user: User,
     trip: Trip,
 ) -> None:
-
     if current_user.role != Roles.DRIVER:
         return
 
@@ -144,17 +126,12 @@ def check_student_trip_consistency(
     student: Student,
     trip: Trip,
 ) -> None:
-
     if student.university_id != trip.university_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="دانشجو و سفر متعلق به یک دانشگاه نیستند",
         )
 
-
-# =========================================================
-# Create Reservation
-# =========================================================
 
 @router.post(
     "/",
@@ -166,7 +143,6 @@ def create_reservation_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-
     if current_user.role not in CREATE_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -199,12 +175,7 @@ def create_reservation_endpoint(
         trip,
     )
 
-    # -----------------------------------------------------
-    # Student restriction
-    # -----------------------------------------------------
-
     if current_user.role == Roles.STUDENT:
-
         if current_user.student_id is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -217,19 +188,13 @@ def create_reservation_endpoint(
                 detail="شما فقط می‌توانید برای حساب خودتان رزرو ثبت کنید",
             )
 
-    reservation = create_reservation(
+    return create_reservation(
         db,
         trip_id=reservation_data.trip_id,
         student_id=reservation_data.student_id,
         is_standing=reservation_data.is_standing,
     )
 
-    return reservation
-
-
-# =========================================================
-# Get Reservations
-# =========================================================
 
 @router.get(
     "/",
@@ -251,19 +216,13 @@ def get_reservations(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-
     if current_user.role not in VIEW_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="شما مجوز مشاهده رزروها را ندارید",
         )
 
-    # -----------------------------------------------------
-    # Student restriction
-    # -----------------------------------------------------
-
     if current_user.role == Roles.STUDENT:
-
         if current_user.student_id is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -281,14 +240,9 @@ def get_reservations(
 
         student_id = current_user.student_id
 
-    # -----------------------------------------------------
-    # Company requires specific trip
-    # -----------------------------------------------------
-
     trip = None
 
     if trip_id is not None:
-
         trip = get_trip_or_404(
             db,
             trip_id,
@@ -305,17 +259,11 @@ def get_reservations(
             trip,
         )
 
-    if current_user.role == Roles.COMPANY_ADMIN:
-
-        if trip_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="برای مشاهده رزروها توسط شرکت، تعیین سفر الزامی است",
-            )
-
-    # -----------------------------------------------------
-    # Base query
-    # -----------------------------------------------------
+    if current_user.role == Roles.COMPANY_ADMIN and trip_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="برای مشاهده رزروها توسط شرکت، تعیین سفر الزامی است",
+        )
 
     query = (
         db.query(Reservation)
@@ -325,18 +273,12 @@ def get_reservations(
         )
     )
 
-    # -----------------------------------------------------
-    # University / company isolation
-    # -----------------------------------------------------
-
     if current_user.role == Roles.COMPANY_ADMIN:
-
         query = query.filter(
-            Reservation.trip_id == trip_id
+            Reservation.trip_id == trip_id,
         )
 
     elif current_user.role != Roles.SUPER_ADMIN:
-
         if current_user.university_id is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -344,70 +286,49 @@ def get_reservations(
             )
 
         query = query.filter(
-            Trip.university_id == current_user.university_id
+            Trip.university_id == current_user.university_id,
         )
 
-    # -----------------------------------------------------
-    # Student filter
-    # -----------------------------------------------------
-
     if student_id is not None:
-
         student = get_student_or_404(
             db,
             student_id,
         )
 
         if current_user.role == Roles.COMPANY_ADMIN:
-
             check_student_trip_consistency(
                 student,
                 trip,
             )
 
         elif current_user.role != Roles.SUPER_ADMIN:
-
             check_university_access(
                 current_user=current_user,
                 university_id=student.university_id,
             )
 
         query = query.filter(
-            Reservation.student_id == student_id
+            Reservation.student_id == student_id,
         )
-
-    # -----------------------------------------------------
-    # Trip filter
-    # -----------------------------------------------------
 
     if trip_id is not None:
-
         query = query.filter(
-            Reservation.trip_id == trip_id
+            Reservation.trip_id == trip_id,
         )
 
-    # -----------------------------------------------------
-    # Active filter
-    # -----------------------------------------------------
-
     if only_active:
-
         query = query.filter(
-            Reservation.status == "active"
+            Reservation.status == "active",
         )
 
     return (
         query
         .order_by(
-            Reservation.reservation_time.desc()
+            Reservation.reservation_time.desc(),
         )
         .all()
     )
 
-
-# =========================================================
-# Get Reservation By ID
-# =========================================================
 
 @router.get(
     "/{reservation_id}",
@@ -418,7 +339,6 @@ def get_reservation(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-
     if current_user.role not in VIEW_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -428,7 +348,7 @@ def get_reservation(
     reservation = (
         db.query(Reservation)
         .filter(
-            Reservation.id == reservation_id
+            Reservation.id == reservation_id,
         )
         .first()
     )
@@ -455,12 +375,7 @@ def get_reservation(
         trip,
     )
 
-    # -----------------------------------------------------
-    # Student restriction
-    # -----------------------------------------------------
-
     if current_user.role == Roles.STUDENT:
-
         if current_user.student_id != reservation.student_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -469,10 +384,6 @@ def get_reservation(
 
     return reservation
 
-
-# =========================================================
-# Cancel Reservation
-# =========================================================
 
 @router.patch(
     "/{reservation_id}/cancel",
@@ -483,7 +394,6 @@ def cancel_reservation_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-
     if current_user.role not in CREATE_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -493,7 +403,7 @@ def cancel_reservation_endpoint(
     reservation = (
         db.query(Reservation)
         .filter(
-            Reservation.id == reservation_id
+            Reservation.id == reservation_id,
         )
         .first()
     )
@@ -515,21 +425,19 @@ def cancel_reservation_endpoint(
         trip,
     )
 
-    # -----------------------------------------------------
-    # Student restriction
-    # -----------------------------------------------------
+    check_driver_trip_access(
+        current_user,
+        trip,
+    )
 
     if current_user.role == Roles.STUDENT:
-
         if current_user.student_id != reservation.student_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="شما فقط می‌توانید رزرو خودتان را لغو کنید",
             )
 
-    cancelled_reservation = cancel_reservation(
+    return cancel_reservation(
         db,
         reservation_id=reservation_id,
     )
-
-    return cancelled_reservation

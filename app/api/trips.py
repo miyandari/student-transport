@@ -11,6 +11,10 @@ from app.models.user import User
 from app.models.service import Service
 from app.models.schedule import Schedule
 from app.models.contract import Contract
+from app.models.contract_driver import ContractDriver
+from app.models.contract_vehicle import ContractVehicle
+from app.models.driver import Driver
+from app.models.vehicle import Vehicle
 
 from app.schemas.trip import (
     TripCreate,
@@ -77,7 +81,6 @@ def _get_trip(
     db: Session,
     trip_id: int,
 ) -> Trip:
-
     _validate_positive_id(
         trip_id,
         "شناسه سفر",
@@ -102,7 +105,6 @@ def _get_service(
     db: Session,
     service_id: int,
 ) -> Service:
-
     _validate_positive_id(
         service_id,
         "شناسه سرویس",
@@ -127,7 +129,6 @@ def _get_schedule(
     db: Session,
     schedule_id: int,
 ) -> Schedule:
-
     _validate_positive_id(
         schedule_id,
         "شناسه برنامه زمانی",
@@ -146,6 +147,56 @@ def _get_schedule(
         )
 
     return schedule
+
+
+def _get_trip_contract(
+    trip: Trip,
+) -> Contract:
+    service = trip.service
+
+    if service is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="سرویس سفر پیدا نشد",
+        )
+
+    if service.contract_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="سفر تحت قرارداد حمل‌ونقل قرار ندارد",
+        )
+
+    contract = service.contract
+
+    if contract is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="قرارداد سرویس پیدا نشد",
+        )
+
+    if not contract.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="قرارداد سرویس غیرفعال است",
+        )
+
+    if contract.university_id != trip.university_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="دانشگاه قرارداد با دانشگاه سفر مطابقت ندارد",
+        )
+
+    if not (
+        contract.start_date
+        <= trip.trip_date
+        <= contract.end_date
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تاریخ سفر خارج از بازه قرارداد سرویس است",
+        )
+
+    return contract
 
 
 def _check_company_service_access(
@@ -262,7 +313,6 @@ def _check_company_trip_resources(
 ) -> None:
 
     if driver_id is not None:
-
         _validate_positive_id(
             driver_id,
             "شناسه راننده",
@@ -276,7 +326,6 @@ def _check_company_trip_resources(
         )
 
     if vehicle_id is not None:
-
         _validate_positive_id(
             vehicle_id,
             "شناسه خودرو",
@@ -286,6 +335,178 @@ def _check_company_trip_resources(
             db=db,
             current_user=current_user,
             contract_id=contract.id,
+            vehicle_id=vehicle_id,
+        )
+
+
+def _validate_driver_for_trip(
+    db: Session,
+    trip: Trip,
+    contract: Contract,
+    driver_id: int,
+) -> None:
+
+    _validate_positive_id(
+        driver_id,
+        "شناسه راننده",
+    )
+
+    driver = (
+        db.query(Driver)
+        .filter(Driver.id == driver_id)
+        .first()
+    )
+
+    if driver is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="راننده موردنظر پیدا نشد",
+        )
+
+    if not driver.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="راننده غیرفعال است",
+        )
+
+    if driver.university_id != trip.university_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="راننده متعلق به دانشگاه این سفر نیست",
+        )
+
+    if (
+        driver.transport_company_id
+        != contract.transport_company_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="راننده متعلق به شرکت حمل‌ونقل قرارداد نیست",
+        )
+
+    contract_driver = (
+        db.query(ContractDriver)
+        .filter(
+            ContractDriver.contract_id == contract.id,
+            ContractDriver.driver_id == driver_id,
+            ContractDriver.is_active.is_(True),
+        )
+        .first()
+    )
+
+    if contract_driver is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="راننده برای این قرارداد فعال نیست",
+        )
+
+    if not (
+        contract_driver.start_date
+        <= trip.trip_date
+        <= contract_driver.end_date
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تاریخ تخصیص راننده با تاریخ سفر مطابقت ندارد",
+        )
+
+
+def _validate_vehicle_for_trip(
+    db: Session,
+    trip: Trip,
+    contract: Contract,
+    vehicle_id: int,
+) -> None:
+
+    _validate_positive_id(
+        vehicle_id,
+        "شناسه خودرو",
+    )
+
+    vehicle = (
+        db.query(Vehicle)
+        .filter(Vehicle.id == vehicle_id)
+        .first()
+    )
+
+    if vehicle is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="خودرو موردنظر پیدا نشد",
+        )
+
+    if not vehicle.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="خودرو غیرفعال است",
+        )
+
+    if vehicle.university_id != trip.university_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="خودرو متعلق به دانشگاه این سفر نیست",
+        )
+
+    if (
+        vehicle.transport_company_id
+        != contract.transport_company_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="خودرو متعلق به شرکت حمل‌ونقل قرارداد نیست",
+        )
+
+    contract_vehicle = (
+        db.query(ContractVehicle)
+        .filter(
+            ContractVehicle.contract_id == contract.id,
+            ContractVehicle.vehicle_id == vehicle_id,
+            ContractVehicle.is_active.is_(True),
+        )
+        .first()
+    )
+
+    if contract_vehicle is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="خودرو برای این قرارداد فعال نیست",
+        )
+
+    if not (
+        contract_vehicle.start_date
+        <= trip.trip_date
+        <= contract_vehicle.end_date
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تاریخ تخصیص خودرو با تاریخ سفر مطابقت ندارد",
+        )
+
+
+def _validate_assignment_resources(
+    db: Session,
+    trip: Trip,
+    driver_id: int | None,
+    vehicle_id: int | None,
+) -> None:
+
+    contract = _get_trip_contract(
+        trip,
+    )
+
+    if driver_id is not None:
+        _validate_driver_for_trip(
+            db=db,
+            trip=trip,
+            contract=contract,
+            driver_id=driver_id,
+        )
+
+    if vehicle_id is not None:
+        _validate_vehicle_for_trip(
+            db=db,
+            trip=trip,
+            contract=contract,
             vehicle_id=vehicle_id,
         )
 
@@ -541,61 +762,12 @@ def assign_trip_resources_endpoint(
             detail="حداقل راننده یا خودرو باید مشخص شود",
         )
 
-    # -----------------------------------------------------
-    # Access Control
-    # -----------------------------------------------------
-
     if current_user.role == Roles.COMPANY_ADMIN:
 
         check_trip_company_access(
             db=db,
             current_user=current_user,
             trip_id=trip_id,
-        )
-
-        service = trip.service
-
-        if service is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="سرویس سفر پیدا نشد",
-            )
-
-        if service.contract_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="سفر تحت قرارداد شرکت قرار ندارد",
-            )
-
-        contract = service.contract
-
-        if contract is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="قرارداد سفر پیدا نشد",
-            )
-
-        if not contract.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="قرارداد سفر غیرفعال است",
-            )
-
-        if (
-            contract.transport_company_id
-            != current_user.transport_company_id
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="قرارداد سفر متعلق به شرکت شما نیست",
-            )
-
-        _check_company_trip_resources(
-            db=db,
-            current_user=current_user,
-            contract=contract,
-            driver_id=assignment_data.driver_id,
-            vehicle_id=assignment_data.vehicle_id,
         )
 
     else:
@@ -605,21 +777,10 @@ def assign_trip_resources_endpoint(
             trip=trip,
         )
 
-    # -----------------------------------------------------
-    # Current Active Assignment
-    # -----------------------------------------------------
-
     current_assignment = get_active_assignment(
         db=db,
         trip_id=trip.id,
     )
-
-    # اگر فقط یکی از منابع ارسال شده باشد،
-    # منبع دیگر از تخصیص فعال فعلی حفظ می‌شود.
-    #
-    # بنابراین رفتار قبلی API حفظ می‌شود:
-    # ارسال فقط driver_id باعث حذف خودرو نمی‌شود
-    # و ارسال فقط vehicle_id باعث حذف راننده نمی‌شود.
 
     driver_id = assignment_data.driver_id
     vehicle_id = assignment_data.vehicle_id
@@ -638,9 +799,12 @@ def assign_trip_resources_endpoint(
             detail="حداقل راننده یا خودرو باید مشخص شود",
         )
 
-    # -----------------------------------------------------
-    # Create Assignment History
-    # -----------------------------------------------------
+    _validate_assignment_resources(
+        db=db,
+        trip=trip,
+        driver_id=driver_id,
+        vehicle_id=vehicle_id,
+    )
 
     assignment_type = (
         "substitute"
@@ -660,21 +824,26 @@ def assign_trip_resources_endpoint(
         is_active=False,
     )
 
-    db.add(assignment)
-    db.flush()
+    try:
+        db.add(assignment)
+        db.flush()
 
-    # -----------------------------------------------------
-    # Activate New Assignment
-    # -----------------------------------------------------
+        replace_active_assignment(
+            db=db,
+            trip=trip,
+            new_assignment=assignment,
+        )
 
-    replace_active_assignment(
-        db=db,
-        trip=trip,
-        new_assignment=assignment,
-    )
+        db.commit()
+        db.refresh(trip)
 
-    db.commit()
-    db.refresh(trip)
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except Exception:
+        db.rollback()
+        raise
 
     return trip
 
@@ -739,20 +908,12 @@ def get_trips(
 
     query = db.query(Trip)
 
-    # -----------------------------------------------------
-    # Super Admin
-    # -----------------------------------------------------
-
     if current_user.role == Roles.SUPER_ADMIN:
 
         if university_id is not None:
             query = query.filter(
                 Trip.university_id == university_id
             )
-
-    # -----------------------------------------------------
-    # Company Admin
-    # -----------------------------------------------------
 
     elif current_user.role == Roles.COMPANY_ADMIN:
 
@@ -786,10 +947,6 @@ def get_trips(
                 Trip.university_id == university_id
             )
 
-    # -----------------------------------------------------
-    # University / Other Users
-    # -----------------------------------------------------
-
     else:
 
         if current_user.university_id is None:
@@ -810,18 +967,10 @@ def get_trips(
             == current_user.university_id
         )
 
-    # -----------------------------------------------------
-    # Service Filter
-    # -----------------------------------------------------
-
     if service_id is not None:
         query = query.filter(
             Trip.service_id == service_id
         )
-
-    # -----------------------------------------------------
-    # Driver Restriction
-    # -----------------------------------------------------
 
     if current_user.role == Roles.DRIVER:
 
@@ -841,24 +990,14 @@ def get_trips(
             Trip.driver_id == driver_id
         )
 
-    # -----------------------------------------------------
-    # Date Filter
-    # -----------------------------------------------------
-
     if trip_date is not None:
         query = query.filter(
             Trip.trip_date == trip_date
         )
 
-    # -----------------------------------------------------
-    # Status Filter
-    # -----------------------------------------------------
-
     if trip_status is not None:
 
-        trip_status = (
-            trip_status.strip().lower()
-        )
+        trip_status = trip_status.strip().lower()
 
         if trip_status not in TRIP_STATUSES:
             raise HTTPException(
