@@ -20,6 +20,8 @@ from app.api.vehicle_locations import router as vehicle_locations_router
 from app.api.vehicle_location_ws import router as vehicle_location_ws_router
 from app.api.trip_incidents import router as trip_incidents_router
 from app.api.feedbacks import router as feedbacks_router
+from app.api.reports import router as reports_router
+from app.api.notifications import router as notifications_router
 
 
 app = FastAPI(
@@ -95,3 +97,11 @@ app.include_router(vehicle_location_ws_router)
 
 app.include_router(trip_incidents_router)
 app.include_router(feedbacks_router)
+
+
+# =========================================================
+# Reports & Notifications
+# =========================================================
+
+app.include_router(reports_router)
+app.include_router(notifications_router)

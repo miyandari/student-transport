@@ -7,6 +7,8 @@ from app.models.user import User
 from app.schemas.trip_incident import (
     TripIncidentCreate,
     TripIncidentResponse,
+    TripIncidentReplacementCreate,
+    TripIncidentReplacementResponse,
 )
 
 from app.core.dependencies import (
@@ -15,9 +17,7 @@ from app.core.dependencies import (
     check_trip_company_access,
 )
 
-from app.core.roles import (
-    Roles,
-)
+from app.core.roles import Roles
 
 from app.services.trip_incident_service import (
     get_trip,
@@ -25,6 +25,7 @@ from app.services.trip_incident_service import (
     create_trip_incident,
     get_trip_incidents,
     resolve_trip_incident,
+    create_replacement_assignment,
 )
 
 
@@ -47,34 +48,34 @@ WRITE_ROLES = MANAGEMENT_ROLES | {
 
 VIEW_ROLES = WRITE_ROLES
 
+REPLACEMENT_ROLES = MANAGEMENT_ROLES | {
+    Roles.COMPANY_ADMIN,
+}
+
 
 def check_trip_access(
     db: Session,
     current_user: User,
     trip,
 ) -> None:
-
     if current_user.role == Roles.COMPANY_ADMIN:
-
         check_trip_company_access(
             db,
             current_user,
             trip,
         )
+        return
 
-    else:
-
-        check_university_access(
-            current_user=current_user,
-            university_id=trip.university_id,
-        )
+    check_university_access(
+        current_user=current_user,
+        university_id=trip.university_id,
+    )
 
 
 def check_driver_trip_access(
     current_user: User,
     trip,
 ) -> None:
-
     if current_user.role != Roles.DRIVER:
         return
 
@@ -101,7 +102,6 @@ def create_trip_incident_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-
     if current_user.role not in WRITE_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -124,9 +124,7 @@ def create_trip_incident_endpoint(
         trip,
     )
 
-    # راننده فقط می‌تواند حادثه را به نام خودش ثبت کند.
     if current_user.role == Roles.DRIVER:
-
         if current_user.driver_id is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -136,8 +134,9 @@ def create_trip_incident_endpoint(
         reported_by_driver_id = current_user.driver_id
 
     else:
-
-        reported_by_driver_id = incident_data.reported_by_driver_id
+        reported_by_driver_id = (
+            incident_data.reported_by_driver_id
+        )
 
     incident = create_trip_incident(
         db,
@@ -162,19 +161,13 @@ def get_trip_incidents_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-
     if current_user.role not in VIEW_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="شما مجوز مشاهده حوادث را ندارید",
         )
 
-    # -------------------------------------------------
-    # حالت جست‌وجوی یک سفر مشخص
-    # -------------------------------------------------
-
     if trip_id is not None:
-
         trip = get_trip(
             db,
             trip_id,
@@ -198,10 +191,6 @@ def get_trip_incidents_endpoint(
             incident_type=incident_type,
         )
 
-    # -------------------------------------------------
-    # دریافت فهرست حوادث
-    # -------------------------------------------------
-
     incidents = get_trip_incidents(
         db,
         trip_id=None,
@@ -209,30 +198,19 @@ def get_trip_incidents_endpoint(
         incident_type=incident_type,
     )
 
-    # -------------------------------------------------
-    # مدیر کل
-    # -------------------------------------------------
-
     if current_user.role == Roles.SUPER_ADMIN:
         return incidents
 
-    # -------------------------------------------------
-    # شرکت حمل‌ونقل
-    # -------------------------------------------------
-
     if current_user.role == Roles.COMPANY_ADMIN:
-
         filtered_incidents = []
 
         for incident in incidents:
-
             trip = incident.trip
 
             if trip is None:
                 continue
 
             try:
-
                 check_trip_company_access(
                     db,
                     current_user,
@@ -246,10 +224,6 @@ def get_trip_incidents_endpoint(
 
         return filtered_incidents
 
-    # -------------------------------------------------
-    # کاربران دانشگاه
-    # -------------------------------------------------
-
     if current_user.university_id is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -259,7 +233,6 @@ def get_trip_incidents_endpoint(
     filtered_incidents = []
 
     for incident in incidents:
-
         trip = incident.trip
 
         if trip is None:
@@ -268,9 +241,7 @@ def get_trip_incidents_endpoint(
         if trip.university_id != current_user.university_id:
             continue
 
-        # راننده فقط حوادث سفرهای خودش را می‌بیند.
         if current_user.role == Roles.DRIVER:
-
             if current_user.driver_id is None:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -294,7 +265,6 @@ def get_trip_incident_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-
     if current_user.role not in VIEW_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -334,15 +304,14 @@ def resolve_trip_incident_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-
-    RESOLVE_ROLES = {
+    resolve_roles = {
         Roles.SUPER_ADMIN,
         Roles.UNIVERSITY_ADMIN,
         Roles.TRANSPORT_MANAGER,
         Roles.COMPANY_ADMIN,
     }
 
-    if current_user.role not in RESOLVE_ROLES:
+    if current_user.role not in resolve_roles:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="شما مجوز رسیدگی به حادثه را ندارید",
@@ -364,9 +333,65 @@ def resolve_trip_incident_endpoint(
         trip,
     )
 
-    resolved_incident = resolve_trip_incident(
+    return resolve_trip_incident(
         db,
         incident_id=incident_id,
     )
 
-    return resolved_incident
+
+@router.post(
+    "/{incident_id}/replacement",
+    response_model=TripIncidentReplacementResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_replacement_assignment_endpoint(
+    incident_id: int,
+    replacement_data: TripIncidentReplacementCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role not in REPLACEMENT_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="شما مجوز ثبت جایگزین برای این حادثه را ندارید",
+        )
+
+    if current_user.id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="شناسه کاربر معتبر نیست",
+        )
+
+    incident = get_incident(
+        db,
+        incident_id,
+    )
+
+    trip = get_trip(
+        db,
+        incident.trip_id,
+    )
+
+    check_trip_access(
+        db,
+        current_user,
+        trip,
+    )
+
+    if (
+        replacement_data.driver_id is None
+        and replacement_data.vehicle_id is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="حداقل راننده یا خودرو جایگزین باید مشخص شود",
+        )
+
+    return create_replacement_assignment(
+        db=db,
+        incident_id=incident_id,
+        assigned_by_user_id=current_user.id,
+        driver_id=replacement_data.driver_id,
+        vehicle_id=replacement_data.vehicle_id,
+        reason=replacement_data.reason,
+    )

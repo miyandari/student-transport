@@ -378,6 +378,58 @@ def get_stations(
 
 
 # =========================================================
+# Get Station QR Information
+# =========================================================
+
+@router.get(
+    "/{station_id}/qr",
+)
+def get_station_qr(
+    station_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    check_view_role(
+        current_user,
+    )
+
+    if station_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="شناسه ایستگاه نامعتبر است",
+        )
+
+    station = (
+        db.query(Station)
+        .filter(
+            Station.id == station_id,
+            Station.is_active.is_(True),
+        )
+        .first()
+    )
+
+    if station is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="ایستگاه موردنظر پیدا نشد یا غیرفعال است",
+        )
+
+    check_station_view_access(
+        db,
+        current_user,
+        station.university_id,
+    )
+
+    return {
+        "station_id": station.id,
+        "station_name": station.name,
+        "university_id": station.university_id,
+        "qr_type": "station_boarding",
+        "qr_data": f"station:{station.id}",
+    }
+
+
+# =========================================================
 # Get Station By ID
 # =========================================================
 

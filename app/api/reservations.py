@@ -211,7 +211,7 @@ def get_reservations(
     ),
     only_active: bool = Query(
         default=True,
-        description="فقط رزروهای فعال",
+        description="فقط رزروهای فعال و در انتظار",
     ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -259,7 +259,10 @@ def get_reservations(
             trip,
         )
 
-    if current_user.role == Roles.COMPANY_ADMIN and trip_id is None:
+    if (
+        current_user.role == Roles.COMPANY_ADMIN
+        and trip_id is None
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="برای مشاهده رزروها توسط شرکت، تعیین سفر الزامی است",
@@ -318,7 +321,9 @@ def get_reservations(
 
     if only_active:
         query = query.filter(
-            Reservation.status == "active",
+            Reservation.status.in_(
+                ["active", "waitlisted"]
+            ),
         )
 
     return (

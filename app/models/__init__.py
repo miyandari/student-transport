@@ -28,3 +28,5 @@ from app.models.reservation import Reservation
 from app.models.station_event import StationEvent
 from app.models.feedback import Feedback
 from app.models.audit_log import AuditLog
+from app.models.notification import Notification
+from app.models.boarding_request import BoardingRequest

@@ -202,7 +202,7 @@ def validate_station_for_trip(
     if route.university_id != trip.university_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="مسیر سرویس متعلق به دانشگاه این سفر نیست",
+            detail="مسیر سرویس متعلق به این دانشگاه نیست",
         )
 
     route_station = (
@@ -253,6 +253,45 @@ def count_onboard_standing_passengers(
         )
         .count()
     )
+
+
+def get_available_boarding_mode(
+    db: Session,
+    trip: Trip,
+    requested_is_standing: bool,
+) -> bool | None:
+    seated_count = count_onboard_seated_passengers(
+        db,
+        trip.id,
+    )
+
+    standing_count = count_onboard_standing_passengers(
+        db,
+        trip.id,
+    )
+
+    seated_capacity = trip.seated_capacity or 0
+    standing_capacity = trip.standing_capacity or 0
+
+    if requested_is_standing:
+        if (
+            trip.allow_standing
+            and standing_count < standing_capacity
+        ):
+            return True
+
+        return None
+
+    if seated_count < seated_capacity:
+        return False
+
+    if (
+        trip.allow_standing
+        and standing_count < standing_capacity
+    ):
+        return True
+
+    return None
 
 
 def validate_passenger_capacity(
@@ -424,8 +463,6 @@ def board_passenger(
             "ایستگاه سوارشدن",
         )
 
-    # رزرو برای سوارشدن الزامی نیست.
-    # ظرفیت بر اساس وضعیت واقعی مسافران داخل خودرو کنترل می‌شود.
     validate_passenger_capacity(
         db,
         trip,
@@ -446,6 +483,165 @@ def board_passenger(
     db.refresh(passenger)
 
     return passenger
+
+
+def validate_waitlist_capacity(
+    db: Session,
+    trip: Trip,
+    is_standing: bool,
+) -> bool:
+    return (
+        get_available_boarding_mode(
+            db,
+            trip,
+            is_standing,
+        )
+        is not None
+    )
+
+
+def create_waitlist_promotion_notification(
+    db: Session,
+    *,
+    student_id: int,
+    trip: Trip,
+    request,
+    passenger: TripPassenger,
+) -> None:
+    from app.models.user import User
+    from app.services.notification_service import create_notification
+
+    user = (
+        db.query(User)
+        .filter(
+            User.student_id == student_id,
+            User.is_active.is_(True),
+        )
+        .first()
+    )
+
+    if user is None:
+        return
+
+    create_notification(
+        db,
+        user_id=user.id,
+        university_id=trip.university_id,
+        notification_type="boarding_request_waitlist_promoted",
+        title="درخواست صف انتظار تأیید شد",
+        message=(
+            "با آزادشدن ظرفیت، درخواست شما به‌صورت خودکار "
+            "تأیید و سوارشدن ثبت شد."
+        ),
+        data={
+            "boarding_request_id": request.id,
+            "trip_id": trip.id,
+            "trip_passenger_id": passenger.id,
+            "boarding_method": "automatic_waitlist",
+            "is_standing": passenger.is_standing,
+        },
+    )
+
+
+def promote_waitlisted_boarding_requests(
+    db: Session,
+    *,
+    trip_id: int,
+) -> list[TripPassenger]:
+    from app.models.boarding_request import BoardingRequest
+
+    trip = get_trip(
+        db,
+        trip_id,
+        for_update=True,
+    )
+
+    validate_trip_for_boarding(trip)
+
+    requests = (
+        db.query(BoardingRequest)
+        .filter(
+            BoardingRequest.trip_id == trip.id,
+            BoardingRequest.status == "pending",
+            BoardingRequest.requires_driver_approval.is_(False),
+        )
+        .order_by(
+            BoardingRequest.requested_at.asc(),
+            BoardingRequest.id.asc(),
+        )
+        .all()
+    )
+
+    promoted_passengers: list[TripPassenger] = []
+
+    for request in requests:
+        student = get_student(
+            db,
+            request.student_id,
+        )
+
+        validate_student_access(
+            student,
+            trip,
+        )
+
+        validate_gender_restriction(
+            student,
+            trip,
+        )
+
+        if get_active_passenger(
+            db,
+            trip.id,
+            student.id,
+        ) is not None:
+            request.status = "cancelled"
+            request.responded_at = datetime.now(timezone.utc)
+            continue
+
+        actual_is_standing = get_available_boarding_mode(
+            db,
+            trip,
+            request.is_standing,
+        )
+
+        if actual_is_standing is None:
+            break
+
+        passenger = TripPassenger(
+            trip_id=trip.id,
+            student_id=student.id,
+            boarding_time=datetime.now(timezone.utc),
+            boarding_station_id=request.boarding_station_id,
+            boarding_method="automatic_waitlist",
+            is_standing=actual_is_standing,
+        )
+
+        db.add(passenger)
+        db.flush()
+
+        request.status = "approved"
+        request.responded_at = datetime.now(timezone.utc)
+        request.responded_by_user_id = None
+        request.rejection_reason = None
+        request.is_standing = actual_is_standing
+
+        create_waitlist_promotion_notification(
+            db,
+            student_id=student.id,
+            trip=trip,
+            request=request,
+            passenger=passenger,
+        )
+
+        promoted_passengers.append(passenger)
+
+    db.commit()
+
+    for passenger in promoted_passengers:
+        db.refresh(passenger)
+
+    return promoted_passengers
 
 
 def alight_passenger(
@@ -498,6 +694,12 @@ def alight_passenger(
     passenger.alighting_station_id = alighting_station_id
 
     db.commit()
+
+    promote_waitlisted_boarding_requests(
+        db,
+        trip_id=passenger.trip_id,
+    )
+
     db.refresh(passenger)
 
     return passenger

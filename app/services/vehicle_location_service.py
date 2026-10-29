@@ -6,9 +6,16 @@ from sqlalchemy.orm import Session
 from app.models.vehicle_location import VehicleLocation
 from app.models.trip import Trip
 from app.models.vehicle import Vehicle
+from app.models.reservation import Reservation
+from app.models.user import User
+from app.models.trip_assignment import TripAssignment
 from app.realtime.connection_manager import connection_manager
 from app.services.eta_service import get_next_station
 from app.services.station_event_service import detect_station_event
+from app.services.notification_service import (
+    create_notification,
+    create_near_station_notifications,
+)
 from app.services.trip_lifecycle_service import (
     complete_trip_if_arrived_at_final_station,
 )
@@ -60,6 +67,24 @@ def get_vehicle(
         )
 
     return vehicle
+
+
+def get_active_trip_assignment(
+    db: Session,
+    trip_id: int,
+) -> TripAssignment | None:
+    return (
+        db.query(TripAssignment)
+        .filter(
+            TripAssignment.trip_id == trip_id,
+            TripAssignment.is_active.is_(True),
+        )
+        .order_by(
+            TripAssignment.start_at.desc(),
+            TripAssignment.id.desc(),
+        )
+        .first()
+    )
 
 
 def get_vehicle_locations(
@@ -135,6 +160,7 @@ def validate_trip_for_location(
 def validate_vehicle_for_trip(
     vehicle: Vehicle,
     trip: Trip,
+    active_assignment: TripAssignment | None = None,
 ) -> None:
     if not vehicle.is_active:
         raise HTTPException(
@@ -147,6 +173,21 @@ def validate_vehicle_for_trip(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="سفر و خودرو متعلق به یک دانشگاه نیستند",
         )
+
+    if active_assignment is not None:
+        if active_assignment.vehicle_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="برای تخصیص فعال این سفر خودرویی تعیین نشده است",
+            )
+
+        if active_assignment.vehicle_id != vehicle.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="این خودرو در حال حاضر برای این سفر فعال نیست",
+            )
+
+        return
 
     if trip.vehicle_id is None:
         raise HTTPException(
@@ -165,12 +206,34 @@ def validate_driver_vehicle_access(
     driver_id: int | None,
     trip: Trip,
     vehicle: Vehicle,
+    active_assignment: TripAssignment | None = None,
 ) -> None:
     if driver_id is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="حساب کاربری راننده به یک راننده متصل نیست",
         )
+
+    if active_assignment is not None:
+        if active_assignment.driver_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="برای تخصیص فعال این سفر راننده‌ای تعیین نشده است",
+            )
+
+        if active_assignment.driver_id != driver_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="این سفر در حال حاضر به شما اختصاص داده نشده است",
+            )
+
+        if active_assignment.vehicle_id != vehicle.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="این خودرو برای تخصیص فعال شما به این سفر نیست",
+            )
+
+        return
 
     if trip.driver_id != driver_id:
         raise HTTPException(
@@ -206,6 +269,120 @@ def validate_recorded_at(
         )
 
 
+def send_station_arrival_notifications(
+    db: Session,
+    *,
+    trip_id: int,
+    station_event: dict,
+) -> None:
+    if station_event.get("event_type") != "arrived":
+        return
+
+    station_id = station_event.get("station_id")
+    station_name = station_event.get("station_name")
+    stop_order = station_event.get("stop_order")
+
+    reservations = (
+        db.query(Reservation, User)
+        .join(
+            User,
+            User.student_id == Reservation.student_id,
+        )
+        .filter(
+            Reservation.trip_id == trip_id,
+            Reservation.status == "active",
+            User.is_active.is_(True),
+        )
+        .all()
+    )
+
+    if not reservations:
+        return
+
+    for reservation, user in reservations:
+        create_notification(
+            db,
+            user_id=user.id,
+            university_id=user.university_id,
+            transport_company_id=user.transport_company_id,
+            notification_type="trip_station_arrival",
+            title="رسیدن سرویس به ایستگاه",
+            message=(
+                f"سرویس شما به ایستگاه «{station_name}» رسیده است."
+            ),
+            data={
+                "trip_id": trip_id,
+                "reservation_id": reservation.id,
+                "station_id": station_id,
+                "station_name": station_name,
+                "stop_order": stop_order,
+                "event_type": "arrived",
+            },
+        )
+
+    db.commit()
+
+
+def send_near_station_notifications(
+    db: Session,
+    *,
+    trip_id: int,
+    eta_result: dict,
+) -> None:
+    if not eta_result:
+        return
+
+    next_station = eta_result.get("next_station")
+
+    if not next_station:
+        return
+
+    station_id = next_station.get("station_id")
+    station_name = next_station.get("station_name")
+    stop_order = next_station.get("stop_order")
+
+    eta_seconds = eta_result.get("eta_seconds")
+
+    if (
+        station_id is None
+        or station_name is None
+        or eta_seconds is None
+    ):
+        return
+
+    try:
+        eta_seconds = int(eta_seconds)
+    except (TypeError, ValueError):
+        return
+
+    reservations = (
+        db.query(Reservation, User)
+        .join(
+            User,
+            User.student_id == Reservation.student_id,
+        )
+        .filter(
+            Reservation.trip_id == trip_id,
+            Reservation.status == "active",
+            User.is_active.is_(True),
+        )
+        .all()
+    )
+
+    if not reservations:
+        return
+
+    create_near_station_notifications(
+        db,
+        trip_id=trip_id,
+        station_id=station_id,
+        station_name=station_name,
+        stop_order=stop_order,
+        eta_seconds=eta_seconds,
+        reservations=reservations,
+    )
+
+
 async def create_vehicle_location(
     db: Session,
     *,
@@ -227,10 +404,21 @@ async def create_vehicle_location(
         trip_id=trip_id,
     )
 
-    validate_trip_for_location(trip)
+    validate_trip_for_location(
+        trip,
+    )
 
     # ---------------------------------------------------------
-    # 2. دریافت و اعتبارسنجی خودرو
+    # 2. دریافت تخصیص فعال سفر
+    # ---------------------------------------------------------
+
+    active_assignment = get_active_trip_assignment(
+        db,
+        trip.id,
+    )
+
+    # ---------------------------------------------------------
+    # 3. دریافت و اعتبارسنجی خودرو
     # ---------------------------------------------------------
 
     vehicle = get_vehicle(
@@ -241,10 +429,11 @@ async def create_vehicle_location(
     validate_vehicle_for_trip(
         vehicle,
         trip,
+        active_assignment=active_assignment,
     )
 
     # ---------------------------------------------------------
-    # 3. بررسی دسترسی راننده
+    # 4. بررسی دسترسی راننده
     # ---------------------------------------------------------
 
     if driver_id is not None:
@@ -252,10 +441,11 @@ async def create_vehicle_location(
             driver_id,
             trip,
             vehicle,
+            active_assignment=active_assignment,
         )
 
     # ---------------------------------------------------------
-    # 4. بررسی زمان GPS
+    # 5. بررسی زمان GPS
     # ---------------------------------------------------------
 
     validate_recorded_at(
@@ -267,7 +457,7 @@ async def create_vehicle_location(
     )
 
     # ---------------------------------------------------------
-    # 5. ثبت موقعیت GPS
+    # 6. ثبت موقعیت GPS
     # ---------------------------------------------------------
 
     location = VehicleLocation(
@@ -285,7 +475,7 @@ async def create_vehicle_location(
     db.refresh(location)
 
     # ---------------------------------------------------------
-    # 6. ارسال موقعیت جدید به WebSocket
+    # 7. ارسال موقعیت جدید به WebSocket
     # ---------------------------------------------------------
 
     await connection_manager.send_to_trip(
@@ -303,7 +493,7 @@ async def create_vehicle_location(
     )
 
     # ---------------------------------------------------------
-    # 7. محاسبه و ارسال ETA
+    # 8. محاسبه و ارسال ETA
     # ---------------------------------------------------------
 
     try:
@@ -322,12 +512,20 @@ async def create_vehicle_location(
                 },
             )
 
+            try:
+                send_near_station_notifications(
+                    db,
+                    trip_id=trip.id,
+                    eta_result=eta_result,
+                )
+            except Exception:
+                db.rollback()
+
     except Exception:
-        # خطای ETA نباید باعث شکست ثبت GPS شود.
         pass
 
     # ---------------------------------------------------------
-    # 8. تشخیص ورود / خروج از ایستگاه
+    # 9. تشخیص ورود / خروج از ایستگاه
     # ---------------------------------------------------------
 
     station_event = None
@@ -347,12 +545,20 @@ async def create_vehicle_location(
                 },
             )
 
+            try:
+                send_station_arrival_notifications(
+                    db,
+                    trip_id=trip.id,
+                    station_event=station_event,
+                )
+            except Exception:
+                db.rollback()
+
     except Exception:
-        # خطای تشخیص ایستگاه نباید ثبت GPS را خراب کند.
         pass
 
     # ---------------------------------------------------------
-    # 9. بررسی رسیدن به آخرین ایستگاه
+    # 10. بررسی رسیدن به آخرین ایستگاه
     # ---------------------------------------------------------
 
     completed_trip = None
@@ -391,12 +597,10 @@ async def create_vehicle_location(
             )
 
     except Exception:
-        # خطای تکمیل خودکار سفر نباید
-        # باعث از دست رفتن موقعیت GPS شود.
         pass
 
     # ---------------------------------------------------------
-    # 10. خروجی نهایی
+    # 11. خروجی نهایی
     # ---------------------------------------------------------
 
     return location

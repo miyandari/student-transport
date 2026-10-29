@@ -149,6 +149,23 @@ def _get_schedule(
     return schedule
 
 
+def _validate_service_for_university(
+    service: Service,
+    university_id: int,
+) -> None:
+    if service.university_id != university_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="سرویس متعلق به دانشگاه مشخص‌شده نیست",
+        )
+
+    if not service.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="سرویس غیرفعال است",
+        )
+
+
 def _get_trip_contract(
     trip: Trip,
 ) -> Contract:
@@ -213,17 +230,10 @@ def _check_company_service_access(
         "شناسه دانشگاه",
     )
 
-    if service.university_id != university_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="دانشگاه سرویس با دانشگاه سفر مطابقت ندارد",
-        )
-
-    if not service.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="سرویس غیرفعال است",
-        )
+    _validate_service_for_university(
+        service=service,
+        university_id=university_id,
+    )
 
     if service.contract_id is None:
         raise HTTPException(
@@ -574,6 +584,35 @@ def create_trip_endpoint(
         service_id=trip_data.service_id,
     )
 
+    _validate_service_for_university(
+        service=service,
+        university_id=trip_data.university_id,
+    )
+
+    if trip_data.schedule_id is not None:
+        schedule = _get_schedule(
+            db=db,
+            schedule_id=trip_data.schedule_id,
+        )
+
+        if schedule.university_id != trip_data.university_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="برنامه زمانی متعلق به دانشگاه این سفر نیست",
+            )
+
+        if schedule.service_id != service.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="برنامه زمانی متعلق به سرویس انتخاب‌شده نیست",
+            )
+
+        if not schedule.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="برنامه زمانی غیرفعال است",
+            )
+
     if current_user.role == Roles.COMPANY_ADMIN:
 
         contract = _check_company_service_access(
@@ -642,6 +681,37 @@ def create_trip_from_schedule_endpoint(
         trip_data.university_id,
         "شناسه دانشگاه",
     )
+
+    schedule = _get_schedule(
+        db=db,
+        schedule_id=trip_data.schedule_id,
+    )
+
+    if schedule.university_id != trip_data.university_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="برنامه زمانی متعلق به دانشگاه این سفر نیست",
+        )
+
+    if not schedule.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="برنامه زمانی غیرفعال است",
+        )
+
+    service = schedule.service
+
+    if service is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="سرویس برنامه زمانی پیدا نشد",
+        )
+
+    if service.university_id != trip_data.university_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="سرویس متعلق به دانشگاه این سفر نیست",
+        )
 
     if current_user.role == Roles.COMPANY_ADMIN:
 

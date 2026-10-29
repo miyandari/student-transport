@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
@@ -13,6 +13,7 @@ from app.models.university import University
 from app.models.contract import Contract
 from app.models.contract_driver import ContractDriver
 from app.models.contract_vehicle import ContractVehicle
+from app.services.trip_lifecycle_service import process_trip_no_shows
 
 
 TRIP_STATUSES = {
@@ -41,6 +42,12 @@ VALID_TRANSITIONS = {
 }
 
 
+# ایران از سال ۱۴۰۱ تغییر ساعت تابستانی ندارد.
+# بنابراین برای این پروژه از Offset ثابت +03:30 استفاده می‌کنیم
+# تا وابستگی به tzdata / ZoneInfo ایجاد نشود.
+IRAN_TZ = timezone(timedelta(hours=3, minutes=30))
+
+
 # =========================================================
 # Helpers
 # =========================================================
@@ -66,6 +73,38 @@ def normalize_utc_datetime(
         )
 
     return value.astimezone(timezone.utc)
+
+
+def to_iran_datetime(
+    value: datetime,
+) -> datetime:
+    """
+    تبدیل زمان آگاه از منطقه زمانی به زمان ایران +03:30.
+    """
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="زمان باید دارای منطقه زمانی باشد",
+        )
+
+    return value.astimezone(IRAN_TZ)
+
+
+def iran_datetime_to_utc(
+    trip_date: date,
+    local_time,
+) -> datetime:
+    """
+    ساخت زمان UTC از تاریخ و ساعت محلی ایران.
+    """
+    local_datetime = datetime.combine(
+        trip_date,
+        local_time,
+    ).replace(
+        tzinfo=IRAN_TZ
+    )
+
+    return local_datetime.astimezone(timezone.utc)
 
 
 def get_system_day_of_week(
@@ -309,11 +348,9 @@ def get_trip_time_interval(
     ):
         return trip_start, None
 
-    trip_end = datetime.combine(
+    trip_end = iran_datetime_to_utc(
         trip.trip_date,
         schedule.arrival_time,
-    ).replace(
-        tzinfo=timezone.utc
     )
 
     if trip_end <= trip_start:
@@ -555,17 +592,19 @@ def validate_trip_date_and_time(
     planned_departure_time: datetime,
 ) -> datetime:
 
-    planned_departure_time = normalize_utc_datetime(
+    local_departure_time = to_iran_datetime(
         planned_departure_time
     )
 
-    if planned_departure_time.date() != trip_date:
+    if local_departure_time.date() != trip_date:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="تاریخ زمان حرکت با تاریخ سفر مطابقت ندارد",
         )
 
-    return planned_departure_time
+    return local_departure_time.astimezone(
+        timezone.utc
+    )
 
 
 def validate_schedule_for_trip_date(
@@ -589,14 +628,22 @@ def validate_schedule_departure_time(
     planned_departure_time: datetime,
 ) -> None:
 
-    planned_departure_time = normalize_utc_datetime(
+    local_departure_time = to_iran_datetime(
         planned_departure_time
     )
 
-    if (
-        planned_departure_time.time()
-        != schedule.departure_time
-    ):
+    actual_time = local_departure_time.time().replace(
+        second=0,
+        microsecond=0,
+        tzinfo=None,
+    )
+
+    expected_time = schedule.departure_time.replace(
+        second=0,
+        microsecond=0,
+    )
+
+    if actual_time != expected_time:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="زمان حرکت سفر با زمان حرکت برنامه زمانی مطابقت ندارد",
@@ -1112,11 +1159,9 @@ def create_trip_from_schedule(
         allow_standing=allow_standing,
     )
 
-    planned_departure_time = datetime.combine(
+    planned_departure_time = iran_datetime_to_utc(
         trip_date,
         schedule.departure_time,
-    ).replace(
-        tzinfo=timezone.utc
     )
 
     check_duplicate_trip(
@@ -1233,11 +1278,9 @@ def generate_daily_trips(
         except HTTPException:
             continue
 
-        planned_departure_time = datetime.combine(
+        planned_departure_time = iran_datetime_to_utc(
             trip_date,
             schedule.departure_time,
-        ).replace(
-            tzinfo=timezone.utc
         )
 
         try:
@@ -1484,6 +1527,12 @@ def update_trip_status(
         trip=trip,
         new_status=new_status,
     )
+
+    if new_status == "completed":
+        process_trip_no_shows(
+            db=db,
+            trip=trip,
+        )
 
     try:
         db.commit()

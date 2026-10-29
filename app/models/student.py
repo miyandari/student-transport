@@ -3,6 +3,7 @@ from sqlalchemy import (
     Integer,
     String,
     Boolean,
+    DateTime,
     ForeignKey,
     CheckConstraint,
     Index,
@@ -76,6 +77,26 @@ class Student(Base):
         index=True,
     )
 
+    no_show_count = Column(
+        Integer,
+        default=0,
+        nullable=False,
+        index=True,
+    )
+
+    negative_score = Column(
+        Integer,
+        default=0,
+        nullable=False,
+        index=True,
+    )
+
+    blocked_until = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+
     university = relationship("University")
 
     __table_args__ = (
@@ -110,6 +131,14 @@ class Student(Base):
         CheckConstraint(
             "qr_token IS NULL OR length(trim(qr_token)) > 0",
             name="ck_students_qr_token_not_empty",
+        ),
+        CheckConstraint(
+            "no_show_count >= 0",
+            name="ck_students_no_show_count_non_negative",
+        ),
+        CheckConstraint(
+            "negative_score >= 0",
+            name="ck_students_negative_score_non_negative",
         ),
         Index(
             "ix_students_university_active",

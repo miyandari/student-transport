@@ -6,6 +6,7 @@ from pydantic.aliases import AliasChoices
 
 ALLOWED_RESERVATION_STATUSES = {
     "active",
+    "waitlisted",
     "cancelled",
 }
 

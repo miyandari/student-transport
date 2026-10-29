@@ -6,6 +6,12 @@ from sqlalchemy.orm import Session
 from app.models.trip_incident import TripIncident
 from app.models.trip import Trip
 from app.models.driver import Driver
+from app.models.vehicle import Vehicle
+from app.models.trip_assignment import TripAssignment
+
+from app.services.trip_assignment_service import (
+    replace_active_assignment,
+)
 
 
 def get_trip(
@@ -59,10 +65,29 @@ def get_driver(
     if not driver:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="راننده گزارش‌دهنده پیدا نشد",
+            detail="راننده موردنظر پیدا نشد",
         )
 
     return driver
+
+
+def get_vehicle(
+    db: Session,
+    vehicle_id: int,
+) -> Vehicle:
+    vehicle = (
+        db.query(Vehicle)
+        .filter(Vehicle.id == vehicle_id)
+        .first()
+    )
+
+    if not vehicle:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="خودرو موردنظر پیدا نشد",
+        )
+
+    return vehicle
 
 
 def validate_trip_for_incident(
@@ -88,7 +113,24 @@ def validate_driver_for_trip(
     if not driver.is_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="راننده گزارش‌دهنده غیرفعال است",
+            detail="راننده غیرفعال است",
+        )
+
+
+def validate_vehicle_for_trip(
+    vehicle: Vehicle,
+    trip: Trip,
+) -> None:
+    if vehicle.university_id != trip.university_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="خودرو متعلق به دانشگاه این سفر نیست",
+        )
+
+    if not vehicle.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="خودرو غیرفعال است",
         )
 
 
@@ -228,3 +270,141 @@ def resolve_trip_incident(
     db.refresh(incident)
 
     return incident
+
+
+def create_replacement_assignment(
+    db: Session,
+    *,
+    incident_id: int,
+    assigned_by_user_id: int,
+    driver_id: int | None = None,
+    vehicle_id: int | None = None,
+    reason: str | None = None,
+) -> TripAssignment:
+
+    if driver_id is None and vehicle_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="حداقل راننده یا خودرو جایگزین باید مشخص شود",
+        )
+
+    incident = get_incident(
+        db,
+        incident_id,
+    )
+
+    trip = get_trip(
+        db,
+        incident.trip_id,
+    )
+
+    if trip.status in {"completed", "cancelled"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="برای سفر پایان‌یافته یا لغوشده امکان جایگزینی وجود ندارد",
+        )
+
+    if driver_id is not None:
+        driver = get_driver(
+            db,
+            driver_id,
+        )
+
+        validate_driver_for_trip(
+            driver,
+            trip,
+        )
+
+    if vehicle_id is not None:
+        vehicle = get_vehicle(
+            db,
+            vehicle_id,
+        )
+
+        validate_vehicle_for_trip(
+            vehicle,
+            trip,
+        )
+
+    current_assignment = (
+        db.query(TripAssignment)
+        .filter(
+            TripAssignment.trip_id == trip.id,
+            TripAssignment.is_active.is_(True),
+        )
+        .order_by(
+            TripAssignment.id.desc(),
+        )
+        .first()
+    )
+
+    if current_assignment is not None:
+        if driver_id is None:
+            driver_id = current_assignment.driver_id
+
+        if vehicle_id is None:
+            vehicle_id = current_assignment.vehicle_id
+
+    if driver_id is None and vehicle_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="منابع جایگزین معتبر نیستند",
+        )
+
+    assignment = TripAssignment(
+        trip_id=trip.id,
+        driver_id=driver_id,
+        vehicle_id=vehicle_id,
+        assigned_by_user_id=assigned_by_user_id,
+        assignment_type="substitute",
+        reason=(
+            reason.strip()
+            if reason and reason.strip()
+            else f"جایگزینی به علت حادثه شماره {incident.id}"
+        ),
+        start_at=datetime.now(timezone.utc),
+        end_at=None,
+        is_active=False,
+    )
+
+    try:
+        db.add(assignment)
+        db.flush()
+
+        replace_active_assignment(
+            db=db,
+            trip=trip,
+            new_assignment=assignment,
+        )
+
+        db.commit()
+        db.refresh(assignment)
+
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except Exception:
+        db.rollback()
+        raise
+
+    return assignment
+
+
+def replace_trip_resources(
+    db: Session,
+    *,
+    incident_id: int,
+    assigned_by_user_id: int,
+    driver_id: int | None = None,
+    vehicle_id: int | None = None,
+    reason: str | None = None,
+) -> TripAssignment:
+    return create_replacement_assignment(
+        db=db,
+        incident_id=incident_id,
+        assigned_by_user_id=assigned_by_user_id,
+        driver_id=driver_id,
+        vehicle_id=vehicle_id,
+        reason=reason,
+    )
