@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.reservation import Reservation
+from app.models.route_station import RouteStation
 from app.models.trip import Trip
 from app.models.student import Student
 from app.models.trip_passenger import TripPassenger
@@ -155,6 +156,59 @@ def validate_student_gender_for_trip(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="این سرویس برای جنسیت دانشجوی انتخاب‌شده مجاز نیست",
+        )
+
+
+def validate_station_for_trip(
+    db: Session,
+    trip: Trip,
+    station_id: int | None,
+) -> None:
+    """
+    بررسی می‌کند ایستگاه انتخاب‌شده دانشجو واقعاً
+    در مسیر سرویس همین سفر وجود داشته باشد.
+
+    station_id در رزرو به معنی «ایستگاه موردنظر دانشجو
+    برای سوارشدن» است و لزوماً ایستگاه واقعی سوارشدن نیست.
+    ایستگاه واقعی بعداً در TripPassenger.boarding_station_id
+    ثبت خواهد شد.
+    """
+
+    if station_id is None:
+        return
+
+    validate_positive_id(
+        station_id,
+        "شناسه ایستگاه",
+    )
+
+    service = trip.service
+
+    if service is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="سرویس این سفر مشخص نشده است",
+        )
+
+    if service.route_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="مسیر سرویس این سفر مشخص نشده است",
+        )
+
+    route_station = (
+        db.query(RouteStation)
+        .filter(
+            RouteStation.route_id == service.route_id,
+            RouteStation.station_id == station_id,
+        )
+        .first()
+    )
+
+    if not route_station:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ایستگاه انتخاب‌شده در مسیر این سفر وجود ندارد",
         )
 
 
@@ -319,6 +373,7 @@ def create_reservation(
     *,
     trip_id: int,
     student_id: int,
+    station_id: int | None = None,
     is_standing: bool,
 ) -> Reservation:
     trip = get_trip(
@@ -342,6 +397,12 @@ def create_reservation(
     validate_student_gender_for_trip(
         student,
         trip,
+    )
+
+    validate_station_for_trip(
+        db,
+        trip,
+        station_id,
     )
 
     existing_reservation = get_active_reservation(
@@ -377,6 +438,7 @@ def create_reservation(
     reservation = Reservation(
         trip_id=trip.id,
         student_id=student.id,
+        station_id=station_id,
         reservation_time=datetime.now(timezone.utc),
         status="active" if has_capacity else "waitlisted",
         is_standing=is_standing,

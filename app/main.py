@@ -22,6 +22,9 @@ from app.api.trip_incidents import router as trip_incidents_router
 from app.api.feedbacks import router as feedbacks_router
 from app.api.reports import router as reports_router
 from app.api.notifications import router as notifications_router
+from app.api.boarding_requests import router as boarding_requests_router
+from app.api.analytics_reports import router as analytics_reports_router
+from app.api.finance_reports import router as finance_reports_router
 
 
 app = FastAPI(
@@ -81,6 +84,7 @@ app.include_router(schedules_router)
 app.include_router(trips_router)
 app.include_router(trip_passengers_router)
 app.include_router(reservations_router)
+app.include_router(boarding_requests_router)
 
 
 # =========================================================
@@ -105,3 +109,5 @@ app.include_router(feedbacks_router)
 
 app.include_router(reports_router)
 app.include_router(notifications_router)
+app.include_router(analytics_reports_router)
+app.include_router(finance_reports_router)

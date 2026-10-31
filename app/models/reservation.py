@@ -37,6 +37,15 @@ class Reservation(Base):
         index=True,
     )
 
+    # ایستگاهی که دانشجو هنگام رزرو انتخاب کرده است.
+    # این ایستگاه می‌تواند با ایستگاه واقعی سوارشدن متفاوت باشد.
+    station_id = Column(
+        Integer,
+        ForeignKey("stations.id"),
+        nullable=True,
+        index=True,
+    )
+
     reservation_time = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -58,6 +67,11 @@ class Reservation(Base):
     trip = relationship("Trip")
     student = relationship("Student")
 
+    station = relationship(
+        "Station",
+        foreign_keys=[station_id],
+    )
+
     __table_args__ = (
         CheckConstraint(
             "trip_id > 0",
@@ -67,6 +81,11 @@ class Reservation(Base):
         CheckConstraint(
             "student_id > 0",
             name="ck_reservations_student_id_positive",
+        ),
+
+        CheckConstraint(
+            "station_id IS NULL OR station_id > 0",
+            name="ck_reservations_station_id_positive",
         ),
 
         CheckConstraint(
@@ -83,6 +102,13 @@ class Reservation(Base):
         Index(
             "ix_reservations_student_status",
             "student_id",
+            "status",
+        ),
+
+        Index(
+            "ix_reservations_trip_station_status",
+            "trip_id",
+            "station_id",
             "status",
         ),
 

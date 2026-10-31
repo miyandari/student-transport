@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
@@ -17,6 +19,9 @@ from app.core.dependencies import (
 )
 
 from app.realtime.connection_manager import connection_manager
+
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(
@@ -54,12 +59,7 @@ async def vehicle_location_websocket(
     websocket: WebSocket,
     trip_id: int,
 ):
-    print(">>> WebSocket request received")
-    print(">>> Trip ID:", trip_id)
-
     await websocket.accept()
-
-    print(">>> WebSocket accepted")
 
     token = websocket.query_params.get("token")
 
@@ -343,12 +343,12 @@ async def vehicle_location_websocket(
             "vehicle_id": vehicle.id,
         })
 
-        print(
-            f">>> WebSocket connected "
-            f"(user={current_user.id}, "
-            f"role={current_user.role}, "
-            f"trip={trip_id}, "
-            f"vehicle={vehicle.id})"
+        logger.info(
+            "WebSocket connected user=%s role=%s trip=%s vehicle=%s",
+            current_user.id,
+            current_user.role,
+            trip_id,
+            vehicle.id,
         )
 
         # -------------------------------------------------
@@ -362,25 +362,23 @@ async def vehicle_location_websocket(
 
         except WebSocketDisconnect:
 
-            print(
-                f">>> WebSocket disconnected "
-                f"(user={current_user.id}, "
-                f"trip={trip_id})"
+            logger.info(
+                "WebSocket disconnected user=%s trip=%s",
+                current_user.id,
+                trip_id,
             )
 
     except WebSocketDisconnect:
 
-        print(
-            f">>> WebSocket disconnected "
-            f"(user={current_user.id if 'current_user' in locals() else 'unknown'}, "
-            f"trip={trip_id})"
+        logger.info(
+            "WebSocket disconnected user=%s trip=%s",
+            current_user.id if "current_user" in locals() else "unknown",
+            trip_id,
         )
 
     except Exception as exc:
 
-        print(
-            f">>> WebSocket error: {exc}"
-        )
+        logger.exception("WebSocket error: %s", exc)
 
         if connected:
             connection_manager.disconnect(

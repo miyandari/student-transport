@@ -15,9 +15,17 @@ class ReservationCreate(BaseModel):
     trip_id: int
     student_id: int
 
+    station_id: int | None = Field(
+        default=None,
+        description="ایستگاه موردنظر دانشجو هنگام رزرو",
+    )
+
     is_standing: bool = Field(
         default=False,
-        validation_alias=AliasChoices("reservation_type", "is_standing"),
+        validation_alias=AliasChoices(
+            "reservation_type",
+            "is_standing",
+        ),
     )
 
     @field_validator("is_standing", mode="before")
@@ -46,6 +54,7 @@ class ReservationResponse(BaseModel):
     id: int
     trip_id: int
     student_id: int
+    station_id: int | None
     reservation_time: datetime
     status: str
     is_standing: bool
@@ -56,7 +65,9 @@ class ReservationResponse(BaseModel):
         value = value.strip().lower()
 
         if value not in ALLOWED_RESERVATION_STATUSES:
-            raise ValueError("وضعیت رزرو نامعتبر است")
+            raise ValueError(
+                "وضعیت رزرو نامعتبر است"
+            )
 
         return value
 

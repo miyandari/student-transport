@@ -192,6 +192,7 @@ def create_reservation_endpoint(
         db,
         trip_id=reservation_data.trip_id,
         student_id=reservation_data.student_id,
+        station_id=reservation_data.station_id,
         is_standing=reservation_data.is_standing,
     )
 
