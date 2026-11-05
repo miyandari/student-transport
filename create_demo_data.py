@@ -276,6 +276,12 @@ def main() -> None:
     db.add(contract)
     db.flush()
 
+    # نرخ هر سفر به‌ازای نوع خودرو (ریال)
+    from app.models.contract_rate import ContractRate
+    db.add(ContractRate(contract_id=contract.id, vehicle_type="bus", price_per_trip=12_000_000))
+    db.add(ContractRate(contract_id=contract.id, vehicle_type="minibus", price_per_trip=7_000_000))
+    db.flush()
+
     # ---------- مدیران ----------
     admin_user = None
     for username, role, first, last, extra in [
