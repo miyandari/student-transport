@@ -5,6 +5,10 @@ from app.api.auth import router as auth_router
 from app.api.users import router as users_router
 from app.api.universities import router as universities_router
 from app.api.students import router as students_router
+from app.api.student_self import router as student_self_router
+from app.api.driver_self import router as driver_self_router
+from app.api.student_import import router as student_import_router
+from app.api.contract_rates import router as contract_rates_router
 from app.api.drivers import router as drivers_router
 from app.api.vehicles import router as vehicles_router
 from app.api.contracts import router as contracts_router
@@ -25,8 +29,7 @@ from app.api.notifications import router as notifications_router
 from app.api.boarding_requests import router as boarding_requests_router
 from app.api.analytics_reports import router as analytics_reports_router
 from app.api.finance_reports import router as finance_reports_router
-from app.api.driver_self import router as driver_self_router
-from app.api.student_import import router as student_import_router
+
 
 app = FastAPI(
     title="سامانه مدیریت سرویس ایاب و ذهاب دانشجویی",
@@ -55,10 +58,12 @@ app.include_router(users_router)
 # =========================================================
 
 app.include_router(universities_router)
-app.include_router(students_router)
+# باید قبل از students_router باشد (مسیرهای /students/me)
+app.include_router(student_self_router)
 app.include_router(driver_self_router)
 app.include_router(student_import_router)
-
+app.include_router(contract_rates_router)
+app.include_router(students_router)
 
 
 # =========================================================

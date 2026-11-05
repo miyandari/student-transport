@@ -30,3 +30,4 @@ from app.models.feedback import Feedback
 from app.models.audit_log import AuditLog
 from app.models.notification import Notification
 from app.models.boarding_request import BoardingRequest
+from app.models.contract_rate import ContractRate
