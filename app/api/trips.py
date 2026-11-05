@@ -410,10 +410,13 @@ def _validate_driver_for_trip(
             detail="راننده برای این قرارداد فعال نیست",
         )
 
-    if not (
-        contract_driver.start_date
-        <= trip.trip_date
-        <= contract_driver.end_date
+    # start_date / end_date اختیاری‌اند؛ None یعنی بازه‌ی باز
+    if (
+        contract_driver.start_date is not None
+        and trip.trip_date < contract_driver.start_date
+    ) or (
+        contract_driver.end_date is not None
+        and trip.trip_date > contract_driver.end_date
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -482,10 +485,13 @@ def _validate_vehicle_for_trip(
             detail="خودرو برای این قرارداد فعال نیست",
         )
 
-    if not (
-        contract_vehicle.start_date
-        <= trip.trip_date
-        <= contract_vehicle.end_date
+    # start_date / end_date اختیاری‌اند؛ None یعنی بازه‌ی باز
+    if (
+        contract_vehicle.start_date is not None
+        and trip.trip_date < contract_vehicle.start_date
+    ) or (
+        contract_vehicle.end_date is not None
+        and trip.trip_date > contract_vehicle.end_date
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
