@@ -875,7 +875,11 @@ def apply_status_transition(
     now = datetime.now(timezone.utc)
 
     if new_status == "in_progress":
-        trip.actual_departure_time = now
+        # حرکت کمی زودتر از برنامه ممکن است؛ قید دیتابیس actual >= planned را می‌طلبد.
+        planned = trip.planned_departure_time
+        if planned.tzinfo is None:
+            planned = planned.replace(tzinfo=timezone.utc)
+        trip.actual_departure_time = max(now, planned)
 
     elif new_status == "completed":
 

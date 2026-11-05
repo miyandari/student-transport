@@ -25,7 +25,8 @@ from app.api.notifications import router as notifications_router
 from app.api.boarding_requests import router as boarding_requests_router
 from app.api.analytics_reports import router as analytics_reports_router
 from app.api.finance_reports import router as finance_reports_router
-
+from app.api.driver_self import router as driver_self_router
+from app.api.student_import import router as student_import_router
 
 app = FastAPI(
     title="سامانه مدیریت سرویس ایاب و ذهاب دانشجویی",
@@ -55,6 +56,9 @@ app.include_router(users_router)
 
 app.include_router(universities_router)
 app.include_router(students_router)
+app.include_router(driver_self_router)
+app.include_router(student_import_router)
+
 
 
 # =========================================================

@@ -1,0 +1,40 @@
+diff --git a/app/main.py b/app/main.py
+index 72f744d..76703b1 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -5,6 +5,8 @@ from app.api.auth import router as auth_router
+ from app.api.users import router as users_router
+ from app.api.universities import router as universities_router
+ from app.api.students import router as students_router
++from app.api.student_self import router as student_self_router
++from app.api.driver_self import router as driver_self_router
+ from app.api.drivers import router as drivers_router
+ from app.api.vehicles import router as vehicles_router
+ from app.api.contracts import router as contracts_router
+@@ -54,6 +56,9 @@ app.include_router(users_router)
+ # =========================================================
+ 
+ app.include_router(universities_router)
++# باید قبل از students_router باشد (مسیرهای /students/me)
++app.include_router(student_self_router)
++app.include_router(driver_self_router)
+ app.include_router(students_router)
+ 
+ 
+diff --git a/app/services/trip_service.py b/app/services/trip_service.py
+index 00419d5..c9a6f14 100644
+--- a/app/services/trip_service.py
++++ b/app/services/trip_service.py
+@@ -875,7 +875,11 @@ def apply_status_transition(
+     now = datetime.now(timezone.utc)
+ 
+     if new_status == "in_progress":
+-        trip.actual_departure_time = now
++        # حرکت کمی زودتر از برنامه ممکن است؛ قید دیتابیس actual >= planned را می‌طلبد.
++        planned = trip.planned_departure_time
++        if planned.tzinfo is None:
++            planned = planned.replace(tzinfo=timezone.utc)
++        trip.actual_departure_time = max(now, planned)
+ 
+     elif new_status == "completed":
+ 
