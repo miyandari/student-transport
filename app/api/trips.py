@@ -954,6 +954,14 @@ def get_trips(
         default=None,
         description="شناسه دانشگاه",
     ),
+    from_date: date | None = Query(
+        default=None,
+        description="از تاریخ (شامل)",
+    ),
+    to_date: date | None = Query(
+        default=None,
+        description="تا تاریخ (شامل)",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1066,9 +1074,25 @@ def get_trips(
             Trip.driver_id == driver_id
         )
 
+    if from_date is not None and to_date is not None and to_date < from_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="تاریخ پایان نمی‌تواند قبل از تاریخ شروع باشد",
+        )
+
     if trip_date is not None:
         query = query.filter(
             Trip.trip_date == trip_date
+        )
+
+    if from_date is not None:
+        query = query.filter(
+            Trip.trip_date >= from_date
+        )
+
+    if to_date is not None:
+        query = query.filter(
+            Trip.trip_date <= to_date
         )
 
     if trip_status is not None:
