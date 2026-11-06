@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -585,6 +586,33 @@ def get_users(
 def get_my_profile(
     current_user: User = Depends(get_current_user),
 ):
+    return current_user
+
+
+# =========================================================
+# ویرایش اطلاعات شخصی (نام و تلفن)
+# =========================================================
+
+class UpdateMyProfileRequest(BaseModel):
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+    phone: str | None = Field(default=None, max_length=20)
+
+
+@router.patch(
+    "/me",
+    response_model=UserProfileResponse,
+)
+def update_my_profile(
+    data: UpdateMyProfileRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    current_user.first_name = data.first_name.strip()
+    current_user.last_name = data.last_name.strip()
+    current_user.phone = (data.phone or "").strip() or None
+    db.commit()
+    db.refresh(current_user)
     return current_user
 
 

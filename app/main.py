@@ -8,6 +8,7 @@ from app.api.students import router as students_router
 from app.api.student_self import router as student_self_router
 from app.api.driver_self import router as driver_self_router
 from app.api.student_import import router as student_import_router
+from app.api.backup import router as backup_router
 from app.api.contract_rates import router as contract_rates_router
 from app.api.drivers import router as drivers_router
 from app.api.vehicles import router as vehicles_router
@@ -62,6 +63,7 @@ app.include_router(universities_router)
 app.include_router(student_self_router)
 app.include_router(driver_self_router)
 app.include_router(student_import_router)
+app.include_router(backup_router)
 app.include_router(contract_rates_router)
 app.include_router(students_router)
 
