@@ -265,6 +265,7 @@ def get_contract(
     دریافت قرارداد یا ایجاد خطای 404.
     """
 
+    contract_id = getattr(contract_id, "id", contract_id)  # شیء یا شناسه هر دو پذیرفته می‌شود
     if contract_id <= 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -377,6 +378,7 @@ def check_driver_company_access(
        مجاز به فعالیت باشد.
     """
 
+    driver_id = getattr(driver_id, "id", driver_id)  # شیء یا شناسه هر دو پذیرفته می‌شود
     if driver_id <= 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -512,6 +514,7 @@ def check_vehicle_company_access(
        مجاز به فعالیت باشد.
     """
 
+    vehicle_id = getattr(vehicle_id, "id", vehicle_id)  # شیء یا شناسه هر دو پذیرفته می‌شود
     if vehicle_id <= 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -634,7 +637,7 @@ def check_vehicle_contract_access(
 def check_trip_company_access(
     db: Session,
     current_user: User,
-    trip_id: int,
+    trip_id: "int | Trip",
 ) -> Trip:
     """
     کنترل دسترسی شرکت حمل‌ونقل به یک سفر.
@@ -660,6 +663,10 @@ def check_trip_company_access(
     7. دانشگاه قرارداد با دانشگاه سفر یکسان باشد.
     8. دانشگاه سرویس با دانشگاه سفر یکسان باشد.
     """
+
+    # بیشتر فراخوانی‌ها خود شیء Trip را می‌دهند و بعضی شناسه؛ هر دو پذیرفته می‌شود
+    if isinstance(trip_id, Trip):
+        trip_id = trip_id.id
 
     if trip_id <= 0:
         raise HTTPException(
