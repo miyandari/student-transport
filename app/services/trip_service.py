@@ -1313,6 +1313,10 @@ def generate_daily_trips(
         )
 
         db.add(trip)
+        db.flush()
+        # راننده/خودروی پیش‌فرض برنامه (اگر تعریف شده و هنوز معتبر باشد)
+        from app.services.schedule_defaults import try_assign_defaults
+        try_assign_defaults(db, trip, schedule, contract, None)
         created_trips.append(trip)
 
     try:

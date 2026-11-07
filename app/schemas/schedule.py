@@ -22,6 +22,9 @@ class ScheduleCreate(BaseModel):
 
     is_active: bool = True
 
+    default_driver_id: int | None = None
+    default_vehicle_id: int | None = None
+
     @field_validator("university_id", "service_id")
     @classmethod
     def validate_positive_ids(
@@ -29,6 +32,19 @@ class ScheduleCreate(BaseModel):
         value: int,
     ) -> int:
         if value <= 0:
+            raise ValueError(
+                "شناسه باید عددی مثبت باشد"
+            )
+
+        return value
+
+    @field_validator("default_driver_id", "default_vehicle_id")
+    @classmethod
+    def validate_default_ids(
+        cls,
+        value: int | None,
+    ) -> int | None:
+        if value is not None and value <= 0:
             raise ValueError(
                 "شناسه باید عددی مثبت باشد"
             )
@@ -84,6 +100,8 @@ class ScheduleResponse(BaseModel):
     arrival_time: time | None
     schedule_type: str
     is_active: bool
+    default_driver_id: int | None = None
+    default_vehicle_id: int | None = None
 
     class Config:
         from_attributes = True

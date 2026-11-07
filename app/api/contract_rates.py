@@ -124,7 +124,7 @@ def costs(
     rates = {(r.contract_id, r.vehicle_type): r.price_per_trip
              for r in db.query(ContractRate).filter(ContractRate.contract_id.in_(ids)).all()}
 
-    q = (db.query(Service.contract_id, Vehicle.vehicle_type, func.count(Trip.id))
+    q = (db.query(Service.contract_id, Vehicle.vehicle_type, func.count(Trip.id), Service.id, Service.name)
          .join(Service, Service.id == Trip.service_id)
          .outerjoin(Vehicle, Vehicle.id == Trip.vehicle_id)
          .filter(Service.contract_id.in_(ids), Trip.status == "completed", Trip.is_active.is_(True)))
@@ -132,20 +132,21 @@ def costs(
         q = q.filter(Trip.trip_date >= start_date)
     if end_date:
         q = q.filter(Trip.trip_date <= end_date)
-    counts = q.group_by(Service.contract_id, Vehicle.vehicle_type).all()
+    counts = q.group_by(Service.contract_id, Vehicle.vehicle_type, Service.id, Service.name).all()
 
     by_contract: dict[int, list[dict]] = {}
-    for cid, vtype, n in counts:
+    for cid, vtype, n, sid, sname in counts:
         vt = (vtype or "").strip().lower() or None
         price = rates.get((cid, vt)) if vt else None
         by_contract.setdefault(cid, []).append({
+            "service_id": sid, "service_name": sname,
             "vehicle_type": vt, "trips": int(n), "price_per_trip": price,
             "amount": int(n) * price if price is not None else None,
         })
 
     items, tot = [], {"trips": 0, "priced_trips": 0, "unpriced_trips": 0, "total_cost": 0}
     for c in contracts:
-        lines = sorted(by_contract.get(c.id, []), key=lambda x: x["vehicle_type"] or "")
+        lines = sorted(by_contract.get(c.id, []), key=lambda x: (x["service_name"] or "", x["vehicle_type"] or ""))
         trips = sum(x["trips"] for x in lines)
         priced = sum(x["trips"] for x in lines if x["price_per_trip"] is not None)
         cost = sum(x["amount"] or 0 for x in lines)

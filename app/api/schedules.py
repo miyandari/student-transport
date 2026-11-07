@@ -14,6 +14,7 @@ from app.core.dependencies import (
     check_company_contract_access,
 )
 from app.core.roles import Roles
+from app.services.schedule_defaults import apply_defaults_to_future_trips, validate_schedule_defaults
 
 from app.services.schedule_service import (
     get_schedule,
@@ -242,14 +243,21 @@ def create_schedule_endpoint(
 ):
     check_management_role(current_user)
 
-    validate_service_for_schedule(
+    service = validate_service_for_schedule(
         db,
         current_user,
         data.university_id,
         data.service_id,
     )
 
-    return create_schedule(
+    validate_schedule_defaults(
+        db,
+        service=service,
+        driver_id=data.default_driver_id,
+        vehicle_id=data.default_vehicle_id,
+    )
+
+    schedule = create_schedule(
         db,
         university_id=data.university_id,
         service_id=data.service_id,
@@ -259,6 +267,13 @@ def create_schedule_endpoint(
         schedule_type=data.schedule_type,
         is_active=data.is_active,
     )
+
+    schedule.default_driver_id = data.default_driver_id
+    schedule.default_vehicle_id = data.default_vehicle_id
+    db.commit()
+    db.refresh(schedule)
+
+    return schedule
 
 
 @router.get(
@@ -445,7 +460,17 @@ def update_schedule_endpoint(
             data.service_id,
         )
 
-    return update_schedule(
+    # پیش‌فرض‌ها فقط وقتی در بدنه آمده باشند تغییر می‌کنند (کلاینت‌های قدیمی آن‌ها را پاک نمی‌کنند)
+    change_driver = "default_driver_id" in data.model_fields_set
+    change_vehicle = "default_vehicle_id" in data.model_fields_set
+    new_driver = data.default_driver_id if change_driver else schedule.default_driver_id
+    new_vehicle = data.default_vehicle_id if change_vehicle else schedule.default_vehicle_id
+
+    if change_driver or change_vehicle:
+        service = get_active_service(db, data.service_id)
+        validate_schedule_defaults(db, service=service, driver_id=new_driver, vehicle_id=new_vehicle)
+
+    updated = update_schedule(
         db,
         schedule_id=schedule_id,
         university_id=data.university_id,
@@ -456,6 +481,47 @@ def update_schedule_endpoint(
         schedule_type=data.schedule_type,
         is_active=data.is_active,
     )
+
+    if change_driver or change_vehicle:
+        updated.default_driver_id = new_driver
+        updated.default_vehicle_id = new_vehicle
+        db.commit()
+        db.refresh(updated)
+
+    return updated
+
+
+@router.post(
+    "/{schedule_id}/apply-defaults",
+)
+def apply_schedule_defaults_endpoint(
+    schedule_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """راننده/خودروی پیش‌فرض فعلی را روی سفرهای آینده‌ی هنوز شروع‌نشده‌ی این برنامه اعمال می‌کند."""
+    check_management_role(current_user)
+    schedule = get_schedule_or_404(db, schedule_id)
+
+    if current_user.role == Roles.COMPANY_ADMIN:
+        check_schedule_company_access(db, current_user, schedule)
+    else:
+        check_university_access(current_user, schedule.university_id)
+
+    if schedule.default_driver_id is None and schedule.default_vehicle_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="برای این برنامه راننده یا خودروی پیش‌فرض تعریف نشده است",
+        )
+
+    try:
+        result = apply_defaults_to_future_trips(db, schedule, current_user)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return result
 
 
 @router.patch(

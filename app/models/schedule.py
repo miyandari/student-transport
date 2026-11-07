@@ -65,6 +65,21 @@ class Schedule(Base):
         index=True,
     )
 
+    # راننده و خودروی پیش‌فرض: هنگام تولید سفر روی آن اعمال می‌شود
+    default_driver_id = Column(
+        Integer,
+        ForeignKey("drivers.id"),
+        nullable=True,
+        index=True,
+    )
+
+    default_vehicle_id = Column(
+        Integer,
+        ForeignKey("vehicles.id"),
+        nullable=True,
+        index=True,
+    )
+
     # =====================================================
     # Relationships
     # =====================================================

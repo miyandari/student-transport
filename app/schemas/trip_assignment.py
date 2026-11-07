@@ -31,7 +31,7 @@ class TripAssignmentResponse(BaseModel):
     driver_id: int | None = None
     vehicle_id: int | None = None
 
-    assigned_by_user_id: int
+    assigned_by_user_id: int | None
 
     replaces_assignment_id: int | None = None
 

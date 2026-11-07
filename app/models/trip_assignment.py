@@ -45,10 +45,11 @@ class TripAssignment(Base):
         index=True,
     )
 
+    # خالی = تخصیص خودکار توسط سیستم (تولید شبانه سفرها)
     assigned_by_user_id = Column(
         Integer,
         ForeignKey("users.id"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
 

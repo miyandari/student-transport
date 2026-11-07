@@ -287,7 +287,23 @@ def get_contract(
     return contract
 
 
-def check_contract_access(
+def check_contract_access(*args, **kwargs) -> None:
+    """
+    پذیرش هر دو شکل فراخوانی:
+      check_contract_access(current_user, contract)
+      check_contract_access(db, current_user, contract_or_id)
+    """
+    if kwargs:
+        return _check_contract_access(**kwargs)
+    if len(args) == 3:
+        db, current_user, contract = args
+        if not isinstance(contract, Contract):
+            contract = db.query(Contract).filter(Contract.id == contract).first()
+        return _check_contract_access(current_user, contract)
+    return _check_contract_access(*args)
+
+
+def _check_contract_access(
     current_user: User,
     contract: Contract,
 ) -> None:
