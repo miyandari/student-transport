@@ -1,8 +1,10 @@
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.models.reservation import Reservation
 from app.models.trip_passenger import TripPassenger
 from app.models.trip import Trip
 from app.models.student import Student
@@ -255,12 +257,69 @@ def count_onboard_standing_passengers(
     )
 
 
+def has_active_reservation(
+    db: Session,
+    trip_id: int,
+    student_id: int,
+) -> bool:
+    return (
+        db.query(Reservation.id)
+        .filter(
+            Reservation.trip_id == trip_id,
+            Reservation.student_id == student_id,
+            Reservation.status == "active",
+        )
+        .first()
+        is not None
+    )
+
+
+def count_seats_committed(
+    db: Session,
+    trip_id: int,
+) -> int:
+    """
+    صندلی‌های اشغال یا تعهدشده: رزروهای فعال + مسافران نشسته‌ی سوارشده‌ای
+    که رزرو فعال ندارند (تا مسافر بدون رزرو صندلی رزروشده‌ی دیگری را نگیرد).
+    """
+    reserved = (
+        db.query(Reservation)
+        .filter(
+            Reservation.trip_id == trip_id,
+            Reservation.status == "active",
+        )
+        .count()
+    )
+
+    reserved_students = (
+        db.query(Reservation.student_id)
+        .filter(
+            Reservation.trip_id == trip_id,
+            Reservation.status == "active",
+        )
+    )
+
+    walk_in_seated = (
+        db.query(TripPassenger)
+        .filter(
+            TripPassenger.trip_id == trip_id,
+            TripPassenger.boarding_time.is_not(None),
+            TripPassenger.alighting_time.is_(None),
+            TripPassenger.is_standing.is_(False),
+            TripPassenger.student_id.notin_(reserved_students),
+        )
+        .count()
+    )
+
+    return reserved + walk_in_seated
+
+
 def get_available_boarding_mode(
     db: Session,
     trip: Trip,
     requested_is_standing: bool,
 ) -> bool | None:
-    seated_count = count_onboard_seated_passengers(
+    seated_count = count_seats_committed(
         db,
         trip.id,
     )
@@ -298,6 +357,7 @@ def validate_passenger_capacity(
     db: Session,
     trip: Trip,
     is_standing: bool,
+    student_id: int | None = None,
 ) -> None:
     if is_standing:
         if not trip.allow_standing:
@@ -322,7 +382,15 @@ def validate_passenger_capacity(
 
         return
 
-    current_seated = count_onboard_seated_passengers(
+    # دانشجوی دارای رزرو فعال، صندلی‌اش از قبل تضمین شده است
+    if student_id is not None and has_active_reservation(
+        db,
+        trip.id,
+        student_id,
+    ):
+        return
+
+    current_seated = count_seats_committed(
         db=db,
         trip_id=trip.id,
     )
@@ -337,6 +405,37 @@ def validate_passenger_capacity(
         )
 
 
+def insert_passenger(
+    db: Session,
+    passenger: TripPassenger,
+) -> None:
+    """
+    درج مسافر در یک SAVEPOINT.
+
+    اگر دو درخواست همزمان برای یک دانشجو برسند، قید یکتای دیتابیس
+    یکی را رد می‌کند؛ به‌جای خطای ۵۰۰ پیام روشن ۴۰۹ برمی‌گردد و
+    بقیه‌ی تراکنش (مثلاً درخواست سوارشدن) سالم می‌ماند.
+    """
+    try:
+        with db.begin_nested():
+            db.add(passenger)
+            db.flush()
+    except IntegrityError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="دانشجو قبلاً در این سفر سوار شده است",
+        )
+
+
+def _finish(db: Session, passenger: TripPassenger, commit: bool) -> TripPassenger:
+    if commit:
+        db.commit()
+        db.refresh(passenger)
+    else:
+        db.flush()
+    return passenger
+
+
 def create_trip_passenger(
     db: Session,
     *,
@@ -346,6 +445,7 @@ def create_trip_passenger(
     is_standing: bool,
     boarding_station_id: int | None,
     alighting_station_id: int | None,
+    commit: bool = True,
 ) -> TripPassenger:
 
     trip = get_trip(
@@ -393,10 +493,15 @@ def create_trip_passenger(
             "ایستگاه پیاده‌شدن",
         )
 
+    # دانشجوی دارای رزرو فعال همیشه روی صندلی می‌نشیند
+    if has_active_reservation(db, trip.id, student.id):
+        is_standing = False
+
     validate_passenger_capacity(
         db,
         trip,
         is_standing,
+        student.id,
     )
 
     passenger = TripPassenger(
@@ -409,11 +514,9 @@ def create_trip_passenger(
         alighting_station_id=alighting_station_id,
     )
 
-    db.add(passenger)
-    db.commit()
-    db.refresh(passenger)
+    insert_passenger(db, passenger)
 
-    return passenger
+    return _finish(db, passenger, commit)
 
 
 def board_passenger(
@@ -424,6 +527,7 @@ def board_passenger(
     boarding_method: str,
     is_standing: bool,
     boarding_station_id: int | None,
+    commit: bool = True,
 ) -> TripPassenger:
 
     trip = get_trip(
@@ -463,10 +567,15 @@ def board_passenger(
             "ایستگاه سوارشدن",
         )
 
+    # دانشجوی دارای رزرو فعال همیشه روی صندلی می‌نشیند
+    if has_active_reservation(db, trip.id, student.id):
+        is_standing = False
+
     validate_passenger_capacity(
         db,
         trip,
         is_standing,
+        student.id,
     )
 
     passenger = TripPassenger(
@@ -478,11 +587,9 @@ def board_passenger(
         is_standing=is_standing,
     )
 
-    db.add(passenger)
-    db.commit()
-    db.refresh(passenger)
+    insert_passenger(db, passenger)
 
-    return passenger
+    return _finish(db, passenger, commit)
 
 
 def validate_waitlist_capacity(

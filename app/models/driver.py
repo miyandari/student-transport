@@ -133,9 +133,4 @@ class Driver(Base):
             "transport_company_id",
             "is_active",
         ),
-
-        Index(
-            "ix_drivers_national_id",
-            "national_id",
-        ),
     )

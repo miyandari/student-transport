@@ -278,57 +278,27 @@ def count_active_standing_reservations(
     )
 
 
+FULL_RESERVATION_MESSAGE = (
+    "ظرفیت رزرو این سفر تکمیل است. "
+    "در ایستگاه با موافقت و تأیید راننده می‌توانید به سرویس مورد نظر سوار شوید."
+)
+
+
 def has_reservation_capacity(
     db: Session,
     trip: Trip,
-    is_standing: bool,
+    is_standing: bool = False,
 ) -> bool:
-    if is_standing:
-        if not trip.allow_standing:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="رزرو ایستاده برای این سفر مجاز نیست",
-            )
+    """
+    رزرو فقط برای صندلی است؛ ظرفیت رزرو = ظرفیت صندلی تعریف‌شده‌ی سفر.
+    ایستادن فقط در ایستگاه و با تأیید راننده ممکن است.
+    """
+    from app.services.trip_passenger_service import count_seats_committed
 
-        if trip.standing_capacity is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="ظرفیت ایستاده برای این سفر مشخص نشده است",
-            )
+    if not trip.seated_capacity or trip.seated_capacity <= 0:
+        return False
 
-        if trip.standing_capacity <= 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="ظرفیت ایستاده این سفر صفر است",
-            )
-
-        return (
-            count_active_standing_reservations(
-                db,
-                trip.id,
-            )
-            < trip.standing_capacity
-        )
-
-    if trip.seated_capacity is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ظرفیت صندلی برای این سفر مشخص نشده است",
-        )
-
-    if trip.seated_capacity <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ظرفیت صندلی این سفر صفر است",
-        )
-
-    return (
-        count_active_seated_reservations(
-            db,
-            trip.id,
-        )
-        < trip.seated_capacity
-    )
+    return count_seats_committed(db, trip.id) < trip.seated_capacity
 
 
 def promote_waitlisted_reservations(
@@ -374,7 +344,7 @@ def create_reservation(
     trip_id: int,
     student_id: int,
     station_id: int | None = None,
-    is_standing: bool,
+    is_standing: bool = False,
 ) -> Reservation:
     trip = get_trip(
         db,
@@ -429,19 +399,22 @@ def create_reservation(
             detail="این دانشجو در حال حاضر در این سفر سوار است و نیازی به رزرو ندارد",
         )
 
-    has_capacity = has_reservation_capacity(
-        db,
-        trip,
-        is_standing,
-    )
+    # انتخاب ایستاده/نشسته توسط دانشجو نادیده گرفته می‌شود: رزرو همیشه صندلی است
+    is_standing = False
+
+    if not has_reservation_capacity(db, trip):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=FULL_RESERVATION_MESSAGE,
+        )
 
     reservation = Reservation(
         trip_id=trip.id,
         student_id=student.id,
         station_id=station_id,
         reservation_time=datetime.now(timezone.utc),
-        status="active" if has_capacity else "waitlisted",
-        is_standing=is_standing,
+        status="active",
+        is_standing=False,
     )
 
     try:

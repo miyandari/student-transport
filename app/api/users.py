@@ -481,6 +481,7 @@ def create_user(
         password_hash=hash_password(
             user_data.password
         ),
+        must_change_password=True,
         first_name=(
             user_data.first_name.strip()
             if user_data.first_name
@@ -649,6 +650,7 @@ def change_my_password(
     current_user.password_hash = hash_password(
         password_data.new_password,
     )
+    current_user.must_change_password = False
 
     db.commit()
 
@@ -747,6 +749,8 @@ def change_user_password(
     user.password_hash = hash_password(
         password_data.new_password,
     )
+    # رمز را مدیر تعیین کرده؛ کاربر باید در ورود بعدی تغییرش دهد
+    user.must_change_password = user.id != current_user.id
 
     db.commit()
 

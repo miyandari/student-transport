@@ -120,5 +120,8 @@ class Reservation(Base):
             postgresql_where=(
                 status == "active"
             ),
+            sqlite_where=(
+                status == "active"
+            ),
         ),
     )

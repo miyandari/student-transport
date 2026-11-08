@@ -1,3 +1,4 @@
+from pydantic import BaseModel, Field
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -933,6 +934,8 @@ def assign_trip_resources_endpoint(
     response_model=list[TripResponse],
 )
 def get_trips(
+    skip: int = Query(default=0, ge=0, description="تعداد ردیف ردشده"),
+    limit: int | None = Query(default=None, ge=1, le=1000, description="حداکثر تعداد ردیف (اختیاری)"),
     trip_date: date | None = Query(
         default=None,
         description="تاریخ سفر",
@@ -1115,6 +1118,8 @@ def get_trips(
             Trip.trip_date.asc(),
             Trip.planned_departure_time.asc(),
         )
+        .offset(skip)
+        .limit(limit if limit is not None else 1_000_000)
         .all()
     )
 
@@ -1207,6 +1212,37 @@ def update_trip_status_endpoint(
         trip=trip,
         new_status=status_data.status,
     )
+
+
+class TripDelayBody(BaseModel):
+    minutes: int = Field(ge=1, le=720)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+@router.post("/{trip_id}/delay")
+def announce_trip_delay_endpoint(
+    trip_id: int,
+    body: TripDelayBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """اعلام تأخیر سفر توسط مدیر: ثبت حادثه + اعلان به دانشجویان رزروکننده."""
+    if current_user.role not in TRIP_MANAGEMENT_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="شما مجوز اعلام تأخیر سفر را ندارید",
+        )
+
+    trip = _get_trip(db=db, trip_id=trip_id)
+
+    if current_user.role == Roles.COMPANY_ADMIN:
+        check_trip_company_access(db=db, current_user=current_user, trip_id=trip_id)
+    else:
+        _check_trip_university_access(current_user=current_user, trip=trip)
+
+    from app.services.trip_lifecycle_service import announce_trip_delay
+
+    return announce_trip_delay(db, trip=trip, minutes=body.minutes, reason=body.reason)
 
 
 # =========================================================

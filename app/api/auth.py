@@ -98,4 +98,5 @@ def login(
     return {
         "access_token": access_token,
         "token_type": "bearer",
+        "must_change_password": bool(user.must_change_password),
     }

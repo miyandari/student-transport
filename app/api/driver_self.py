@@ -613,6 +613,33 @@ async def driver_locations(
     )
 
 
+class DelayBody(BaseModel):
+    minutes: int = Field(ge=1, le=720)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+@router.post("/trips/{trip_id}/delay")
+def driver_delay(
+    trip_id: int,
+    body: DelayBody,
+    db: Session = Depends(get_db),
+    ctx: tuple[User, Driver] = Depends(current_driver),
+):
+    """اعلام تأخیر توسط راننده: ثبت حادثه + اعلان به دانشجویان رزروکننده."""
+    _user, driver = ctx
+    trip = own_trip(db, driver, trip_id)
+
+    from app.services.trip_lifecycle_service import announce_trip_delay
+
+    return announce_trip_delay(
+        db,
+        trip=trip,
+        minutes=body.minutes,
+        reason=body.reason,
+        reported_by_driver_id=driver.id,
+    )
+
+
 @router.post("/trips/{trip_id}/breakdown", response_model=BreakdownResult)
 def driver_breakdown(
     trip_id: int,

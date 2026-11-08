@@ -152,4 +152,15 @@ class BoardingRequest(Base):
             "student_id",
             "status",
         ),
+
+        # هر دانشجو در هر سفر حداکثر یک درخواست در انتظار دارد؛
+        # حتی اگر دو درخواست دقیقاً همزمان برسند.
+        Index(
+            "uq_boarding_requests_pending_trip_student",
+            "trip_id",
+            "student_id",
+            unique=True,
+            postgresql_where=(status == "pending"),
+            sqlite_where=(status == "pending"),
+        ),
     )

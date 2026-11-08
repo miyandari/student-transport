@@ -64,6 +64,14 @@ class User(Base):
         nullable=False,
     )
 
+    # رمز اولیه/بازنشانی‌شده؛ کاربر باید در اولین ورود رمز را عوض کند
+    must_change_password = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+
     first_name = Column(
         String(100),
         nullable=True,

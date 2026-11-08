@@ -116,7 +116,8 @@ def import_students(
             ensure_student_qr_token(db, s)
             db.add(User(university_id=data.university_id, student_id=s.id, username=num,
                         password_hash=pw_hash, first_name=fn, last_name=ln, phone=phone,
-                        role=Roles.STUDENT, is_active=True))
+                        role=Roles.STUDENT, is_active=True,
+                        must_change_password=True))
         db.commit()
     except Exception:
         db.rollback()

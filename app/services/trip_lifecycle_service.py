@@ -276,6 +276,135 @@ def cancel_pending_boarding_requests(
     return cancelled_count
 
 
+def notify_reserved_students(
+    db: Session,
+    *,
+    trip: Trip,
+    notification_type: str,
+    title: str,
+    message: str,
+    data: dict | None = None,
+) -> int:
+    """اعلان به دانشجویانی که برای این سفر رزرو فعال دارند (بدون commit)."""
+    reservations = (
+        db.query(Reservation)
+        .filter(
+            Reservation.trip_id == trip.id,
+            Reservation.status == "active",
+        )
+        .all()
+    )
+    count = 0
+    for reservation in reservations:
+        notification = create_notification_for_student(
+            db,
+            student_id=reservation.student_id,
+            university_id=trip.university_id,
+            notification_type=notification_type,
+            title=title,
+            message=message,
+            data={"trip_id": trip.id, **(data or {})},
+        )
+        if notification is not None:
+            count += 1
+    return count
+
+
+def announce_trip_delay(
+    db: Session,
+    *,
+    trip: Trip,
+    minutes: int,
+    reason: str | None,
+    reported_by_driver_id: int | None = None,
+) -> dict:
+    """
+    ثبت تأخیر سفر: یک حادثه‌ی نوع trip_delay ثبت می‌شود و دانشجویان رزروکننده
+    اعلان می‌گیرند. زمان برنامه‌ریزی‌شده‌ی سفر تغییر نمی‌کند.
+    """
+    from app.services.trip_incident_service import create_trip_incident
+
+    reason_text = (reason or "").strip()
+    incident = create_trip_incident(
+        db,
+        trip_id=trip.id,
+        reported_by_driver_id=reported_by_driver_id,
+        incident_type="trip_delay",
+        description=f"تأخیر {minutes} دقیقه‌ای" + (f": {reason_text}" if reason_text else ""),
+        occurred_at=datetime.now(timezone.utc),
+    )
+
+    service_name = trip.service.name if trip.service else ""
+    notified = notify_reserved_students(
+        db,
+        trip=trip,
+        notification_type="trip_delay",
+        title="تأخیر در سرویس",
+        message=f"سرویس «{service_name}» حدود {minutes} دقیقه تأخیر دارد."
+        + (f" ({reason_text})" if reason_text else ""),
+        data={"delay_minutes": minutes, "incident_id": incident.id},
+    )
+    db.commit()
+    return {"incident_id": incident.id, "notified_students": notified}
+
+
+def cancel_trip_dependents(
+    db: Session,
+    *,
+    trip: Trip,
+) -> dict:
+    """
+    با لغو سفر: رزروهای فعال/لیست انتظار و درخواست‌های سوارشدن در انتظار
+    لغو می‌شوند و به دانشجویان (و راننده) اعلان می‌رود.
+    جریمه‌ی عدم‌حضور برای سفر لغوشده ثبت نمی‌شود.
+    """
+    now = datetime.now(timezone.utc)
+
+    reservations = (
+        db.query(Reservation)
+        .filter(
+            Reservation.trip_id == trip.id,
+            Reservation.status.in_(["active", "waitlisted"]),
+        )
+        .all()
+    )
+    for reservation in reservations:
+        reservation.status = "cancelled"
+        create_notification_for_student(
+            db,
+            student_id=reservation.student_id,
+            university_id=trip.university_id,
+            notification_type="trip_cancelled",
+            title="سفر لغو شد",
+            message="سفری که برای آن رزرو داشتید لغو شد. رزرو شما به‌صورت خودکار لغو شد.",
+            data={"trip_id": trip.id, "reservation_id": reservation.id},
+        )
+
+    requests = (
+        db.query(BoardingRequest)
+        .filter(
+            BoardingRequest.trip_id == trip.id,
+            BoardingRequest.status == "pending",
+        )
+        .all()
+    )
+    for request in requests:
+        request.status = "cancelled"
+        request.responded_at = now
+        request.rejection_reason = "سفر لغو شد"
+        create_notification_for_student(
+            db,
+            student_id=request.student_id,
+            university_id=trip.university_id,
+            notification_type="boarding_request_cancelled",
+            title="درخواست سوارشدن لغو شد",
+            message="به‌دلیل لغو سفر، درخواست سوارشدن شما لغو شد.",
+            data={"boarding_request_id": request.id, "trip_id": trip.id},
+        )
+
+    return {"reservations": len(reservations), "boarding_requests": len(requests)}
+
+
 def complete_trip_if_arrived_at_final_station(
     db: Session,
     *,

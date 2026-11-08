@@ -13,7 +13,11 @@ from app.models.university import University
 from app.models.contract import Contract
 from app.models.contract_driver import ContractDriver
 from app.models.contract_vehicle import ContractVehicle
-from app.services.trip_lifecycle_service import process_trip_no_shows
+from app.services.trip_lifecycle_service import (
+    cancel_pending_boarding_requests,
+    cancel_trip_dependents,
+    process_trip_no_shows,
+)
 
 
 TRIP_STATUSES = {
@@ -1463,6 +1467,10 @@ def assign_trip_resources(
 
     if vehicle_id is not None and vehicle is not None:
         trip.seated_capacity = vehicle.capacity
+        # ظرفیت تغییر کرده؛ اگر جا باز شد، لیست انتظار ارتقا پیدا کند
+        db.flush()
+        from app.services.reservation_service import promote_waitlisted_reservations
+        promote_waitlisted_reservations(db, trip)
 
     try:
         db.commit()
@@ -1539,6 +1547,16 @@ def update_trip_status(
     if new_status == "completed":
         process_trip_no_shows(
             db=db,
+            trip=trip,
+        )
+        cancel_pending_boarding_requests(
+            db,
+            trip_id=trip.id,
+        )
+
+    elif new_status == "cancelled":
+        cancel_trip_dependents(
+            db,
             trip=trip,
         )
 

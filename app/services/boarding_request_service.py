@@ -24,15 +24,20 @@ REJECTED_STATUS = "rejected"
 CANCELLED_STATUS = "cancelled"
 
 
-def get_trip(db: Session, trip_id: int) -> Trip:
-    trip = (
+def get_trip(db: Session, trip_id: int, *, for_update: bool = False) -> Trip:
+    query = (
         db.query(Trip)
         .filter(
             Trip.id == trip_id,
             Trip.is_active.is_(True),
         )
-        .first()
     )
+
+    if for_update:
+        # قفل ردیف سفر: ظرفیت و صف انتظار فقط پشت همین قفل خوانده/نوشته می‌شود.
+        query = query.with_for_update()
+
+    trip = query.first()
 
     if trip is None:
         raise HTTPException(
@@ -331,6 +336,35 @@ def has_available_capacity(
     )
 
 
+def _insert_pending_request(
+    db: Session,
+    request: BoardingRequest,
+) -> tuple[BoardingRequest, bool]:
+    """
+    درج درخواست در انتظار در SAVEPOINT.
+
+    اگر برای همین دانشجو و سفر همزمان درخواست دیگری ثبت شده باشد،
+    ایندکس یکتای جزئی آن را رد می‌کند و همان درخواست موجود برگردانده می‌شود
+    (رفتار قبلی برای درخواست تکراری هم همین بود).
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    try:
+        with db.begin_nested():
+            db.add(request)
+            db.flush()
+        return request, True
+    except IntegrityError:
+        existing = get_active_boarding_request(
+            db,
+            trip_id=request.trip_id,
+            student_id=request.student_id,
+        )
+        if existing is None:
+            raise
+        return existing, False
+
+
 def create_boarding_request(
     db: Session,
     *,
@@ -341,7 +375,8 @@ def create_boarding_request(
     requires_driver_approval: bool = False,
 ) -> BoardingRequest:
     student = get_student(db, student_id)
-    trip = get_trip(db, trip_id)
+    # قفل ردیف سفر: بررسی ظرفیت و درج درخواست/مسافر پشت‌سرهم انجام شود
+    trip = get_trip(db, trip_id, for_update=True)
 
     validate_trip_for_boarding_request(
         trip=trip,
@@ -401,8 +436,9 @@ def create_boarding_request(
             requested_at=now,
         )
 
-        db.add(request)
-        db.flush()
+        request, created = _insert_pending_request(db, request)
+        if not created:
+            return request
 
         driver_user = get_driver_user(
             db,
@@ -468,6 +504,7 @@ def create_boarding_request(
             boarding_method="automatic_request",
             is_standing=boarding_mode,
             boarding_station_id=boarding_station_id,
+            commit=False,
         )
 
         request = BoardingRequest(
@@ -519,8 +556,9 @@ def create_boarding_request(
         requested_at=now,
     )
 
-    db.add(request)
-    db.flush()
+    request, created = _insert_pending_request(db, request)
+    if not created:
+        return request
 
     create_notification_for_student(
         db,
@@ -567,23 +605,41 @@ def get_pending_boarding_requests(
     )
 
 
+def get_request_for_decision(db: Session, request_id: int) -> BoardingRequest:
+    """
+    درخواست را پشت قفل می‌خواند. ترتیب قفل‌ها همیشه «سفر ← درخواست» است
+    تا بین دو تأیید/رد همزمان بن‌بست پیش نیاید.
+    """
+    probe = (
+        db.query(BoardingRequest.trip_id)
+        .filter(BoardingRequest.id == request_id)
+        .first()
+    )
+
+    if probe is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="درخواست سوارشدن پیدا نشد.",
+        )
+
+    get_trip(db, probe[0], for_update=True)
+
+    return (
+        db.query(BoardingRequest)
+        .filter(BoardingRequest.id == request_id)
+        .with_for_update()
+        .populate_existing()
+        .one()
+    )
+
+
 def approve_boarding_request(
     db: Session,
     *,
     request_id: int,
     responded_by_user_id: int,
 ) -> BoardingRequest:
-    request = (
-        db.query(BoardingRequest)
-        .filter(BoardingRequest.id == request_id)
-        .first()
-    )
-
-    if request is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="درخواست سوارشدن پیدا نشد.",
-        )
+    request = get_request_for_decision(db, request_id)
 
     if request.status != PENDING_STATUS:
         raise HTTPException(
@@ -636,6 +692,7 @@ def approve_boarding_request(
         boarding_method="driver_approved",
         is_standing=boarding_mode,
         boarding_station_id=request.boarding_station_id,
+        commit=False,
     )
 
     request.status = APPROVED_STATUS
@@ -675,17 +732,7 @@ def reject_boarding_request(
     responded_by_user_id: int,
     rejection_reason: str | None = None,
 ) -> BoardingRequest:
-    request = (
-        db.query(BoardingRequest)
-        .filter(BoardingRequest.id == request_id)
-        .first()
-    )
-
-    if request is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="درخواست سوارشدن پیدا نشد.",
-        )
+    request = get_request_for_decision(db, request_id)
 
     if request.status != PENDING_STATUS:
         raise HTTPException(

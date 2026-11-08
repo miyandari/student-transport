@@ -377,6 +377,8 @@ def create_replacement_assignment(
             new_assignment=assignment,
         )
 
+        _notify_replacement(db, trip, assignment)
+
         db.commit()
         db.refresh(assignment)
 
@@ -407,4 +409,38 @@ def replace_trip_resources(
         driver_id=driver_id,
         vehicle_id=vehicle_id,
         reason=reason,
+    )
+
+def _notify_replacement(db: Session, trip: Trip, assignment: TripAssignment) -> None:
+    """اعلان جایگزینی به راننده‌ی جدید و دانشجویان رزروکننده (بدون commit)."""
+    from app.models.user import User
+    from app.services.notification_service import create_notification
+    from app.services.trip_lifecycle_service import notify_reserved_students
+
+    service_name = trip.service.name if trip.service else ""
+
+    if assignment.driver_id is not None:
+        driver_user = (
+            db.query(User)
+            .filter(User.driver_id == assignment.driver_id, User.is_active.is_(True))
+            .first()
+        )
+        if driver_user is not None:
+            create_notification(
+                db,
+                user_id=driver_user.id,
+                university_id=trip.university_id,
+                notification_type="trip_assigned_substitute",
+                title="تخصیص سفر جایگزین",
+                message=f"شما به‌عنوان جایگزین برای سفر «{service_name}» تعیین شدید.",
+                data={"trip_id": trip.id, "assignment_id": assignment.id},
+            )
+
+    notify_reserved_students(
+        db,
+        trip=trip,
+        notification_type="trip_substitute",
+        title="تغییر راننده/خودرو",
+        message=f"برای سفر «{service_name}» راننده یا خودروی جایگزین تعیین شد.",
+        data={"assignment_id": assignment.id},
     )

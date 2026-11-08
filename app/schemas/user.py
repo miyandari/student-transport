@@ -17,6 +17,7 @@ class UserProfileResponse(BaseModel):
     driver_id: int | None
 
     is_active: bool
+    must_change_password: bool = False
 
     class Config:
         from_attributes = True

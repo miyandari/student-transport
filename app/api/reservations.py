@@ -202,6 +202,8 @@ def create_reservation_endpoint(
     response_model=list[ReservationResponse],
 )
 def get_reservations(
+    skip: int = Query(default=0, ge=0, description="تعداد ردیف ردشده"),
+    limit: int | None = Query(default=None, ge=1, le=1000, description="حداکثر تعداد ردیف (اختیاری)"),
     trip_id: int | None = Query(
         default=None,
         description="شناسه سفر",
@@ -332,6 +334,8 @@ def get_reservations(
         .order_by(
             Reservation.reservation_time.desc(),
         )
+        .offset(skip)
+        .limit(limit if limit is not None else 1_000_000)
         .all()
     )
 
