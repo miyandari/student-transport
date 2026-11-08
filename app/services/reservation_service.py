@@ -295,6 +295,13 @@ def has_reservation_capacity(
     """
     from app.services.trip_passenger_service import count_seats_committed
 
+    if trip.driver_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="برای این سفر هنوز راننده تعیین نشده است؛ فعلاً رزرو ممکن نیست",
+        )
+
+    # ظرفیت نامشخص/صفر مثل ظرفیت پر است: سوارشدن فقط در ایستگاه با تأیید راننده
     if not trip.seated_capacity or trip.seated_capacity <= 0:
         return False
 

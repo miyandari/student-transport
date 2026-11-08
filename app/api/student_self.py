@@ -217,8 +217,13 @@ def get_trip_availability(
         or 0
     )
 
+    # صندلی‌های اشغال/رزروشده (رزروهای فعال + مسافران بدون رزرو)
+    from app.services.trip_passenger_service import count_seats_committed
+
+    seated_committed = count_seats_committed(db, trip.id)
+
     seated_available = (
-        max(trip.seated_capacity - seated_reserved, 0)
+        max(trip.seated_capacity - seated_committed, 0)
         if trip.seated_capacity is not None
         else None
     )

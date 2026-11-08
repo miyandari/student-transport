@@ -37,3 +37,25 @@ def test_reserved_student_gets_seat_and_walkin_cannot_take_it(db, make_trip, stu
     p = tps.board_passenger(db, trip_id=trip.id, student_id=a.id, boarding_method="qr",
                             is_standing=True, boarding_station_id=None)
     assert p.is_standing is False
+
+
+def test_unknown_capacity_with_driver_acts_as_full(db, make_trip, students):
+    trip = make_trip(seated=1, status="scheduled")
+    trip.seated_capacity = None
+    db.commit()
+    a = _pool(trip, students)[0]
+    with pytest.raises(HTTPException) as e:
+        rs.create_reservation(db, trip_id=trip.id, student_id=a.id)
+    assert e.value.status_code == 409
+    assert "تأیید راننده" in e.value.detail
+
+
+def test_no_driver_cannot_reserve(db, make_trip, students):
+    trip = make_trip(seated=3, status="scheduled")
+    trip.driver_id = None
+    db.commit()
+    a = _pool(trip, students)[0]
+    with pytest.raises(HTTPException) as e:
+        rs.create_reservation(db, trip_id=trip.id, student_id=a.id)
+    assert e.value.status_code == 400
+    assert "راننده" in e.value.detail
