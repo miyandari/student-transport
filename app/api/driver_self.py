@@ -96,7 +96,9 @@ class DriverTripOut(BaseModel):
 
 
 class ManifestPassenger(BaseModel):
-    reservation_id: int
+    reservation_id: int | None = None
+    # سوارشده با QR بدون رزرو (با تأیید راننده)
+    walk_in: bool = False
     student_id: int
     name: str
     student_number: str
@@ -121,6 +123,23 @@ class ManifestResponse(BaseModel):
     trip_id: int
     passengers: list[ManifestPassenger]
     pending_requests: list[ManifestRequest]
+
+
+class ScanBody(BaseModel):
+    qr_token: str = Field(min_length=10, max_length=100)
+    # true: راننده سوار شدن دانشجوی بدون رزرو را تأیید کرده است
+    confirm_walk_in: bool = False
+    station_id: int | None = None
+
+
+class ScanResult(BaseModel):
+    # boarded | already | needs_confirm | full | rejected
+    result: str
+    student_id: int | None = None
+    name: str | None = None
+    student_number: str | None = None
+    has_reservation: bool = False
+    message: str | None = None
 
 
 class DriverStatusBody(BaseModel):
@@ -400,6 +419,35 @@ def driver_manifest(
         for r, s in rows
     ]
 
+    reserved_ids = {r.student_id for r, _ in rows}
+    walk_rows = (
+        db.query(TripPassenger, Student)
+        .join(Student, Student.id == TripPassenger.student_id)
+        .filter(
+            TripPassenger.trip_id == trip.id,
+            TripPassenger.boarding_time.isnot(None),
+        )
+        .order_by(TripPassenger.boarding_time.asc())
+        .all()
+    )
+    for tp, s in walk_rows:
+        if s.id in reserved_ids:
+            continue
+        passengers.append(
+            ManifestPassenger(
+                reservation_id=None,
+                walk_in=True,
+                student_id=s.id,
+                name=f"{s.first_name} {s.last_name}",
+                student_number=s.student_number,
+                gender=s.gender,
+                station_id=tp.boarding_station_id,
+                station_name=stations.get(tp.boarding_station_id),
+                is_standing=bool(tp.is_standing),
+                boarded=True,
+            )
+        )
+
     pending = (
         db.query(BoardingRequest, Student)
         .join(Student, Student.id == BoardingRequest.student_id)
@@ -425,6 +473,94 @@ def driver_manifest(
     return ManifestResponse(
         trip_id=trip.id, passengers=passengers, pending_requests=requests
     )
+
+
+@router.post("/trips/{trip_id}/scan", response_model=ScanResult)
+def driver_scan(
+    trip_id: int,
+    body: ScanBody,
+    db: Session = Depends(get_db),
+    ctx: tuple[User, Driver] = Depends(current_driver),
+):
+    """
+    اسکن QR دانشجو هنگام سوار شدن.
+
+    - رزرو فعال دارد: بی‌صدا سوار ثبت می‌شود (result=boarded).
+    - قبلاً سوار شده: بی‌اثر (result=already).
+    - رزرو ندارد: بدون تأیید راننده ثبت نمی‌شود (result=needs_confirm)؛
+      با confirm_walk_in=true به‌عنوان مسافر بدون رزرو ثبت می‌شود.
+    خطای QR نامعتبر 404 است؛ ظرفیت پر result=full و سایر رد شدن‌ها result=rejected.
+    """
+    from app.services.trip_passenger_service import board_passenger
+
+    _, driver = ctx
+    trip = own_trip(db, driver, trip_id)
+
+    student = (
+        db.query(Student)
+        .filter(Student.qr_token == body.qr_token.strip(), Student.is_active.is_(True))
+        .first()
+    )
+    if student is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="QR کد معتبر نیست",
+        )
+
+    name = f"{student.first_name} {student.last_name}"
+
+    def out(result: str, **kw) -> ScanResult:
+        return ScanResult(
+            result=result, student_id=student.id, name=name,
+            student_number=student.student_number, **kw,
+        )
+
+    if student.university_id != trip.university_id:
+        return out("rejected", message="این دانشجو متعلق به دانشگاه این سفر نیست")
+
+    already = (
+        db.query(TripPassenger)
+        .filter(
+            TripPassenger.trip_id == trip.id,
+            TripPassenger.student_id == student.id,
+            TripPassenger.boarding_time.isnot(None),
+        )
+        .first()
+    )
+    if already is not None:
+        return out("already")
+
+    reservation = (
+        db.query(Reservation)
+        .filter(
+            Reservation.trip_id == trip.id,
+            Reservation.student_id == student.id,
+            Reservation.status == "active",
+        )
+        .first()
+    )
+    has_res = reservation is not None
+
+    if not has_res and not body.confirm_walk_in:
+        return out("needs_confirm", has_reservation=False)
+
+    station_id = body.station_id or (reservation.station_id if reservation else None)
+    standing = bool(reservation.is_standing) if reservation else False
+    try:
+        board_passenger(
+            db,
+            trip_id=trip.id,
+            student_id=student.id,
+            boarding_method="qr" if has_res else "qr_without_reservation",
+            is_standing=standing,
+            boarding_station_id=station_id,
+        )
+    except HTTPException as e:
+        db.rollback()
+        if e.status_code == status.HTTP_409_CONFLICT:
+            return out("full", has_reservation=has_res, message=str(e.detail))
+        return out("rejected", has_reservation=has_res, message=str(e.detail))
+    return out("boarded", has_reservation=has_res)
 
 
 @router.post("/trips/{trip_id}/locations", response_model=LocationBatchResult)
